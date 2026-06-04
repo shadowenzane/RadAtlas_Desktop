@@ -1,7 +1,9 @@
 import os
 import sys
+import json
 import sqlite3
 import shutil
+import requests
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -11,7 +13,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QComboBox, QFileDialog, QMenu, QMenuBar,
     QAction, QCompleter, QToolBar, QSpinBox, QCheckBox
 )
-from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QPoint
+from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QPoint, QTimer
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QPixmap, QPainter, QPen
 
 from models import (
@@ -22,6 +24,7 @@ from models import (
     add_disease, update_disease, delete_disease,
     add_image, delete_image, get_disease, search_diseases
 )
+from ai_helper import load_config, save_config, call_ai, PROVIDERS
 
 # ── 主题定义 ──────────────────────────────────────────────
 THEMES = {
@@ -326,6 +329,99 @@ class LoginDialog(QDialog):
             QMessageBox.warning(self, '错误', '用户名或密码错误')
 
 
+# ── AI配置对话框 ──────────────────────────────────────────
+class AIConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('AI 大模型配置')
+        self.setFixedSize(480, 360)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        config = load_config()
+
+        # 提供商选择
+        provider_row = QHBoxLayout()
+        provider_row.addWidget(QLabel('AI提供商:'))
+        self.provider_combo = QComboBox()
+        for pid, pinfo in PROVIDERS.items():
+            self.provider_combo.addItem(pinfo['name'], pid)
+        # 设置当前选中
+        idx = list(PROVIDERS.keys()).index(config.get('provider', 'deepseek'))
+        self.provider_combo.setCurrentIndex(idx)
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        provider_row.addWidget(self.provider_combo)
+        provider_row.addStretch()
+        layout.addLayout(provider_row)
+
+        # 模型选择
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel('模型:'))
+        self.model_combo = QComboBox()
+        self._update_models()
+        # 设置当前模型
+        cur_model = config.get('model', '')
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemText(i) == cur_model:
+                self.model_combo.setCurrentIndex(i)
+                break
+        model_row.addWidget(self.model_combo)
+        model_row.addStretch()
+        layout.addLayout(model_row)
+
+        # API Key
+        layout.addWidget(QLabel('API Key:'))
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.Password)
+        self.api_key_input.setText(config.get('api_key', ''))
+        self.api_key_input.setPlaceholderText('输入你的API Key')
+        layout.addWidget(self.api_key_input)
+
+        # 自定义API地址
+        layout.addWidget(QLabel('自定义API地址（可选，留空使用默认）:'))
+        self.custom_url_input = QLineEdit()
+        self.custom_url_input.setText(config.get('custom_api_url', ''))
+        self.custom_url_input.setPlaceholderText('https://...')
+        layout.addWidget(self.custom_url_input)
+
+        layout.addSpacing(10)
+
+        # 按钮
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton('保存')
+        save_btn.clicked.connect(self._save)
+        cancel_btn = QPushButton('取消')
+        cancel_btn.setObjectName('mutedBtn')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _on_provider_changed(self, idx):
+        self._update_models()
+
+    def _update_models(self):
+        self.model_combo.clear()
+        pid = self.provider_combo.currentData()
+        if pid and pid in PROVIDERS:
+            for model in PROVIDERS[pid]['models']:
+                self.model_combo.addItem(model)
+
+    def _save(self):
+        config = {
+            'provider': self.provider_combo.currentData() or 'deepseek',
+            'model': self.model_combo.currentText() or 'deepseek-chat',
+            'api_key': self.api_key_input.text().strip(),
+            'custom_api_url': self.custom_url_input.text().strip(),
+        }
+        save_config(config)
+        QMessageBox.information(self, '成功', 'AI配置已保存')
+        self.accept()
+
+
 # ── 添加/编辑疾病对话框 ──────────────────────────────────
 class DiseaseDialog(QDialog):
     FIELDS = [
@@ -375,6 +471,18 @@ class DiseaseDialog(QDialog):
         scroll.setWidget(inner)
         layout.addWidget(scroll)
 
+        # AI 填充按钮行
+        ai_row = QHBoxLayout()
+        self.ai_fill_btn = QPushButton('AI 一键填充')
+        self.ai_fill_btn.clicked.connect(self._ai_fill)
+        ai_row.addWidget(self.ai_fill_btn)
+
+        self.ai_status = QLabel('')
+        self.ai_status.setStyleSheet("color: #888890; font-size: 11px; background: transparent;")
+        ai_row.addWidget(self.ai_status)
+        ai_row.addStretch()
+        layout.addLayout(ai_row)
+
         btn_row = QHBoxLayout()
         save_btn = QPushButton('保存')
         save_btn.clicked.connect(self.accept)
@@ -385,6 +493,59 @@ class DiseaseDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
+
+    def _ai_fill(self):
+        name_cn = self.inputs['name_cn'].text().strip()
+        if not name_cn:
+            QMessageBox.warning(self, '提示', '请先输入疾病中文名')
+            return
+        config = load_config()
+        if not config.get('api_key'):
+            ret = QMessageBox.question(self, '未配置AI',
+                '尚未配置AI大模型API，是否现在配置？')
+            if ret == QMessageBox.Yes:
+                dlg = AIConfigDialog(self)
+                if dlg.exec_() != QDialog.Accepted:
+                    return
+                config = load_config()
+            else:
+                return
+
+        self.ai_fill_btn.setEnabled(False)
+        self.ai_status.setText('正在查询AI，请稍候...')
+        QApplication.processEvents()
+
+        try:
+            result = call_ai(name_cn, config)
+            # 填充字段
+            filled = 0
+            for key, _ in self.FIELDS:
+                val = result.get(key, '').strip() if isinstance(result.get(key), str) else ''
+                if val and not self.inputs[key].text().strip():
+                    self.inputs[key].setText(val)
+                    filled += 1
+                elif val:
+                    # 如果已有内容，也覆盖（AI结果更完整）
+                    self.inputs[key].setText(val)
+                    filled += 1
+            self.ai_status.setText(f'AI填充完成，已填入 {filled} 个字段')
+        except ValueError as e:
+            QMessageBox.warning(self, '配置错误', str(e))
+            self.ai_status.setText('填充失败：未配置API Key')
+        except requests.exceptions.Timeout:
+            QMessageBox.warning(self, '超时', 'AI请求超时，请检查网络连接')
+            self.ai_status.setText('填充失败：请求超时')
+        except requests.exceptions.ConnectionError:
+            QMessageBox.warning(self, '连接错误', '无法连接AI服务，请检查网络和API地址')
+            self.ai_status.setText('填充失败：连接错误')
+        except json.JSONDecodeError:
+            QMessageBox.warning(self, '解析错误', 'AI返回的数据格式异常，请重试')
+            self.ai_status.setText('填充失败：数据格式异常')
+        except Exception as e:
+            QMessageBox.critical(self, '错误', f'AI填充失败:\n{e}')
+            self.ai_status.setText('填充失败')
+        finally:
+            self.ai_fill_btn.setEnabled(True)
 
     def get_data(self):
         return {key: inp.text().strip() for key, inp in self.inputs.items()}
@@ -578,24 +739,300 @@ class EditUserDialog(QDialog):
         self.accept()
 
 
+# ── 图像浏览窗口 ──────────────────────────────────────────
+class ImageViewerDialog(QDialog):
+    """图像浏览窗口：缩放/平移/翻页，双击进入编辑模式"""
+
+    def __init__(self, image_paths, current_index=0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('图像浏览')
+        self.setMinimumSize(900, 650)
+        self.image_paths = image_paths  # list of (img_id, img_path)
+        self.current_index = current_index
+        self.scale = 1.0
+        self.current_theme = self._detect_theme()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 顶部工具栏
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(8, 6, 8, 6)
+        top_bar.setSpacing(6)
+
+        btn_prev = QPushButton('< 上一张')
+        btn_prev.setFixedHeight(32)
+        btn_prev.clicked.connect(self._prev_image)
+        top_bar.addWidget(btn_prev)
+
+        self.page_label = QLabel()
+        self.page_label.setStyleSheet("background: transparent; font-size: 12px;")
+        top_bar.addWidget(self.page_label)
+
+        btn_next = QPushButton('下一张 >')
+        btn_next.setFixedHeight(32)
+        btn_next.clicked.connect(self._next_image)
+        top_bar.addWidget(btn_next)
+
+        top_bar.addSpacing(20)
+
+        btn_zoom_out = QPushButton('-')
+        btn_zoom_out.setFixedSize(32, 32)
+        btn_zoom_out.clicked.connect(self._zoom_out)
+        top_bar.addWidget(btn_zoom_out)
+
+        self.zoom_label = QLabel('100%')
+        self.zoom_label.setFixedWidth(50)
+        self.zoom_label.setStyleSheet("background: transparent; font-size: 12px;")
+        top_bar.addWidget(self.zoom_label)
+
+        btn_zoom_in = QPushButton('+')
+        btn_zoom_in.setFixedSize(32, 32)
+        btn_zoom_in.clicked.connect(self._zoom_in)
+        top_bar.addWidget(btn_zoom_in)
+
+        btn_fit = QPushButton('适应')
+        btn_fit.setObjectName('mutedBtn')
+        btn_fit.setFixedSize(50, 32)
+        btn_fit.clicked.connect(self._zoom_fit)
+        top_bar.addWidget(btn_fit)
+
+        btn_orig = QPushButton('1:1')
+        btn_orig.setObjectName('mutedBtn')
+        btn_orig.setFixedSize(40, 32)
+        btn_orig.clicked.connect(self._zoom_original)
+        top_bar.addWidget(btn_orig)
+
+        top_bar.addStretch()
+
+        btn_edit = QPushButton('编辑图片')
+        btn_edit.setFixedHeight(32)
+        btn_edit.clicked.connect(self._enter_edit)
+        top_bar.addWidget(btn_edit)
+
+        btn_close = QPushButton('关闭')
+        btn_close.setObjectName('mutedBtn')
+        btn_close.setFixedSize(60, 32)
+        btn_close.clicked.connect(self.reject)
+        top_bar.addWidget(btn_close)
+
+        layout.addLayout(top_bar)
+
+        # 画布
+        self.viewer_canvas = _ViewerCanvas(self)
+        layout.addWidget(self.viewer_canvas, stretch=1)
+
+        # 底部提示
+        hint = QLabel('  双击图片进入编辑模式  |  滚轮缩放  |  拖拽平移')
+        hint.setFixedHeight(24)
+        hint.setObjectName('editorInfoBar')
+        layout.addWidget(hint)
+
+        self._apply_theme()
+        self._load_current()
+
+    def _detect_theme(self):
+        app = QApplication.instance()
+        if app:
+            ss = app.styleSheet()
+            for name, t in THEMES.items():
+                if t['bg'] in ss:
+                    return name
+        return '深蓝暗夜'
+
+    def _apply_theme(self):
+        t = THEMES[self.current_theme]
+        is_light = self.current_theme == '浅色经典'
+        bg = t['bg']
+        bg2 = t['bg2']
+        fg = t['fg']
+        fg2 = t['fg2']
+        border = t['border']
+        accent = t['accent']
+        muted = t['muted']
+        self.setStyleSheet(f"""
+        QDialog {{ background-color: {bg}; }}
+        QWidget#editorInfoBar {{
+            background-color: {bg2}; color: {fg2};
+            border-top: 1px solid {border}; font-size: 11px;
+        }}
+        QPushButton {{
+            background-color: {muted}; color: {fg};
+            border: 1px solid {border}; border-radius: 4px; font-size: 12px;
+        }}
+        QPushButton:hover {{ background-color: {border}; }}
+        QPushButton#mutedBtn {{ background-color: {muted}; }}
+        QPushButton#mutedBtn:hover {{ background-color: {border}; }}
+        QLabel {{ background-color: transparent; color: {fg}; }}
+        """)
+        self.viewer_canvas.bg_color = QColor(245, 245, 248) if is_light else QColor(20, 20, 22)
+        self.viewer_canvas.update()
+
+    def _load_current(self):
+        if 0 <= self.current_index < len(self.image_paths):
+            _, img_path = self.image_paths[self.current_index]
+            self.viewer_canvas.load_image(img_path)
+            self.page_label.setText(f' {self.current_index + 1} / {len(self.image_paths)} ')
+            self.zoom_label.setText('100%')
+            self.scale = 1.0
+            self.viewer_canvas.scale = 1.0
+            self.viewer_canvas.offset = QPoint(0, 0)
+            self.viewer_canvas.update()
+
+    def _prev_image(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self._load_current()
+
+    def _next_image(self):
+        if self.current_index < len(self.image_paths) - 1:
+            self.current_index += 1
+            self._load_current()
+
+    def _zoom_in(self):
+        self.scale = min(self.scale * 1.25, 5.0)
+        self.viewer_canvas.scale = self.scale
+        self.zoom_label.setText(f'{int(self.scale * 100)}%')
+        self.viewer_canvas.update()
+
+    def _zoom_out(self):
+        self.scale = max(self.scale / 1.25, 0.1)
+        self.viewer_canvas.scale = self.scale
+        self.zoom_label.setText(f'{int(self.scale * 100)}%')
+        self.viewer_canvas.update()
+
+    def _zoom_fit(self):
+        if self.viewer_canvas.pixmap:
+            cw = self.viewer_canvas.width()
+            ch = self.viewer_canvas.height()
+            pw = self.viewer_canvas.pixmap.width()
+            ph = self.viewer_canvas.pixmap.height()
+            if pw > 0 and ph > 0:
+                self.scale = min(cw / pw, ch / ph) * 0.9
+                self.viewer_canvas.scale = self.scale
+                self.viewer_canvas.offset = QPoint(0, 0)
+                self.zoom_label.setText(f'{int(self.scale * 100)}%')
+                self.viewer_canvas.update()
+
+    def _zoom_original(self):
+        self.scale = 1.0
+        self.viewer_canvas.scale = 1.0
+        self.viewer_canvas.offset = QPoint(0, 0)
+        self.zoom_label.setText('100%')
+        self.viewer_canvas.update()
+
+    def _enter_edit(self):
+        self._open_editor()
+
+    def _open_editor(self):
+        if 0 <= self.current_index < len(self.image_paths):
+            _, img_path = self.image_paths[self.current_index]
+            if os.path.exists(img_path):
+                editor = ImageEditorDialog(img_path, self)
+                editor.exec_()
+                # 编辑后重新加载
+                self.viewer_canvas.load_image(img_path)
+
+
+class _ViewerCanvas(QWidget):
+    """浏览画布：支持缩放/平移/双击"""
+    def __init__(self, viewer, parent=None):
+        super().__init__(parent)
+        self.viewer = viewer
+        self.pixmap = None
+        self.image_path = None
+        self.scale = 1.0
+        self.offset = QPoint(0, 0)
+        self.dragging = False
+        self.last_pos = None
+        self.bg_color = QColor(20, 20, 22)
+        self.setMouseTracking(True)
+
+    def load_image(self, path):
+        self.image_path = path
+        if path and os.path.exists(path):
+            self.pixmap = QPixmap(path)
+            # 自动适应
+            QTimer.singleShot(50, self.viewer._zoom_fit)
+        else:
+            self.pixmap = None
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), self.bg_color)
+        if not self.pixmap:
+            painter.setPen(QColor(100, 100, 100))
+            painter.setFont(QFont("Microsoft YaHei", 14))
+            painter.drawText(self.rect(), Qt.AlignCenter, '无图片')
+            painter.end()
+            return
+        scaled = self.pixmap.scaled(
+            self.pixmap.size() * self.scale,
+            Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        x = (self.width() - scaled.width()) // 2 + self.offset.x()
+        y = (self.height() - scaled.height()) // 2 + self.offset.y()
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self.viewer._zoom_in()
+        else:
+            self.viewer._zoom_out()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            self.last_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self.dragging and self.last_pos:
+            delta = event.pos() - self.last_pos
+            self.offset += delta
+            self.last_pos = event.pos()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
+            self.last_pos = None
+            self.setCursor(Qt.ArrowCursor)
+
+    def mouseDoubleClickEvent(self, event):
+        self.viewer._open_editor()
+
+
 # ── 图片编辑器 ────────────────────────────────────────────
 class ImageEditorDialog(QDialog):
-    """图片编辑器：支持缩放、文字注释、箭头、矩形、圆形"""
+    """图片编辑器：参考专业标注工具设计，支持多种标注和测量"""
 
     TOOLS = [
-        ('pan', '移动', '拖拽移动图片'),
-        ('text', '文字', '点击添加文字注释'),
-        ('arrow', '箭头', '拖拽绘制箭头'),
-        ('line', '直线', '拖拽绘制直线'),
-        ('rect', '矩形', '拖拽绘制矩形'),
-        ('circle', '圆形', '拖拽绘制圆形'),
-        ('eraser', '橡皮擦', '点击删除注释'),
+        ('pan', '移动', '拖拽移动图片 (V)'),
+        ('text', '文字', '点击添加文字注释 (T)'),
+        ('arrow', '箭头', '拖拽绘制箭头 (A)'),
+        ('line', '直线', '拖拽绘制直线 (L)'),
+        ('rect', '矩形', '拖拽绘制矩形 (R)'),
+        ('circle', '圆形', '拖拽绘制圆形 (C)'),
+        ('measure', '测量', '拖拽测量距离 (M)'),
+        ('eraser', '橡皮擦', '点击删除注释 (E)'),
     ]
+
+    TOOL_SHORTCUTS = {
+        Qt.Key_V: 'pan', Qt.Key_T: 'text', Qt.Key_A: 'arrow',
+        Qt.Key_L: 'line', Qt.Key_R: 'rect', Qt.Key_C: 'circle',
+        Qt.Key_M: 'measure', Qt.Key_E: 'eraser',
+    }
 
     def __init__(self, image_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle('图片编辑器')
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(1050, 720)
         self.image_path = image_path
         self.scale = 1.0
         self.tool = 'pan'
@@ -607,13 +1044,12 @@ class ImageEditorDialog(QDialog):
 
         # ── 左侧工具栏 ──
         toolbar_widget = QWidget()
-        toolbar_widget.setFixedWidth(72)
+        toolbar_widget.setFixedWidth(80)
         toolbar_widget.setObjectName('editorToolbar')
         toolbar_layout = QVBoxLayout(toolbar_widget)
-        toolbar_layout.setContentsMargins(6, 10, 6, 10)
-        toolbar_layout.setSpacing(4)
+        toolbar_layout.setContentsMargins(8, 10, 8, 10)
+        toolbar_layout.setSpacing(3)
 
-        # 工具标题
         tool_title = QLabel('工具')
         tool_title.setAlignment(Qt.AlignCenter)
         tool_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
@@ -622,7 +1058,7 @@ class ImageEditorDialog(QDialog):
         self.tool_buttons = {}
         for tool_id, tool_name, tool_tip in self.TOOLS:
             btn = QPushButton(tool_name)
-            btn.setFixedSize(58, 34)
+            btn.setFixedSize(62, 30)
             btn.setToolTip(tool_tip)
             btn.setCheckable(True)
             btn.setChecked(tool_id == 'pan')
@@ -630,9 +1066,9 @@ class ImageEditorDialog(QDialog):
             self.tool_buttons[tool_id] = btn
             toolbar_layout.addWidget(btn)
 
-        toolbar_layout.addSpacing(12)
+        toolbar_layout.addSpacing(8)
 
-        # 缩放控制
+        # 缩放
         zoom_title = QLabel('缩放')
         zoom_title.setAlignment(Qt.AlignCenter)
         zoom_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
@@ -640,7 +1076,7 @@ class ImageEditorDialog(QDialog):
 
         zoom_row = QHBoxLayout()
         btn_zoom_out = QPushButton('-')
-        btn_zoom_out.setFixedSize(26, 26)
+        btn_zoom_out.setFixedSize(28, 28)
         btn_zoom_out.clicked.connect(self._zoom_out)
         zoom_row.addWidget(btn_zoom_out)
         self.zoom_label = QLabel('100%')
@@ -649,20 +1085,26 @@ class ImageEditorDialog(QDialog):
         self.zoom_label.setFixedWidth(40)
         zoom_row.addWidget(self.zoom_label)
         btn_zoom_in = QPushButton('+')
-        btn_zoom_in.setFixedSize(26, 26)
+        btn_zoom_in.setFixedSize(28, 28)
         btn_zoom_in.clicked.connect(self._zoom_in)
         zoom_row.addWidget(btn_zoom_in)
         toolbar_layout.addLayout(zoom_row)
 
-        btn_fit = QPushButton('适应')
-        btn_fit.setFixedSize(58, 28)
+        btn_fit = QPushButton('适应窗口')
         btn_fit.setObjectName('mutedBtn')
+        btn_fit.setFixedSize(62, 26)
         btn_fit.clicked.connect(self._zoom_fit)
         toolbar_layout.addWidget(btn_fit)
 
-        toolbar_layout.addSpacing(12)
+        btn_orig = QPushButton('原始大小')
+        btn_orig.setObjectName('mutedBtn')
+        btn_orig.setFixedSize(62, 26)
+        btn_orig.clicked.connect(self._zoom_original)
+        toolbar_layout.addWidget(btn_orig)
 
-        # 颜色选择
+        toolbar_layout.addSpacing(8)
+
+        # 颜色
         color_title = QLabel('颜色')
         color_title.setAlignment(Qt.AlignCenter)
         color_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
@@ -670,7 +1112,7 @@ class ImageEditorDialog(QDialog):
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(['红色', '黄色', '绿色', '蓝色', '白色', '黑色'])
-        self.color_combo.setFixedWidth(58)
+        self.color_combo.setFixedWidth(62)
         toolbar_layout.addWidget(self.color_combo)
 
         # 线宽
@@ -681,7 +1123,7 @@ class ImageEditorDialog(QDialog):
         self.line_width = QSpinBox()
         self.line_width.setRange(1, 10)
         self.line_width.setValue(2)
-        self.line_width.setFixedWidth(58)
+        self.line_width.setFixedWidth(62)
         toolbar_layout.addWidget(self.line_width)
 
         toolbar_layout.addStretch()
@@ -689,20 +1131,26 @@ class ImageEditorDialog(QDialog):
         # 操作按钮
         btn_undo = QPushButton('撤销')
         btn_undo.setObjectName('mutedBtn')
-        btn_undo.setFixedSize(58, 30)
+        btn_undo.setFixedSize(62, 28)
         btn_undo.clicked.connect(self._undo)
         toolbar_layout.addWidget(btn_undo)
 
         btn_clear = QPushButton('清空')
         btn_clear.setObjectName('mutedBtn')
-        btn_clear.setFixedSize(58, 30)
+        btn_clear.setFixedSize(62, 28)
         btn_clear.clicked.connect(self._clear)
         toolbar_layout.addWidget(btn_clear)
 
         btn_save = QPushButton('保存')
-        btn_save.setFixedSize(58, 30)
+        btn_save.setFixedSize(62, 28)
         btn_save.clicked.connect(self._save)
         toolbar_layout.addWidget(btn_save)
+
+        btn_back = QPushButton('返回浏览')
+        btn_back.setObjectName('mutedBtn')
+        btn_back.setFixedSize(62, 28)
+        btn_back.clicked.connect(self.accept)
+        toolbar_layout.addWidget(btn_back)
 
         layout.addWidget(toolbar_widget)
 
@@ -711,15 +1159,13 @@ class ImageEditorDialog(QDialog):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(0)
 
-        # 顶部信息栏
-        info_bar = QLabel(f'  {os.path.basename(image_path)}  |  当前工具: 移动')
-        info_bar.setFixedHeight(28)
+        info_bar = QLabel(f'  {os.path.basename(image_path)}  |  当前工具: 移动  |  Esc返回浏览')
+        info_bar.setFixedHeight(26)
         info_bar.setObjectName('editorInfoBar')
         self.info_bar = info_bar
         right.addWidget(info_bar)
 
-        # 画布
-        self.canvas = ImageCanvas(self)
+        self.canvas = _EditorCanvas(self)
         self.canvas.image_path = image_path
         self.canvas.load_image()
         right.addWidget(self.canvas, stretch=1)
@@ -728,8 +1174,26 @@ class ImageEditorDialog(QDialog):
 
         self._apply_theme()
 
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in self.TOOL_SHORTCUTS:
+            self._set_tool(self.TOOL_SHORTCUTS[key])
+        elif key == Qt.Key_Escape:
+            self.accept()
+        elif key == Qt.Key_Z and event.modifiers() & Qt.ControlModifier:
+            self._undo()
+        elif key == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
+            self._save()
+        elif key == Qt.Key_Plus or key == Qt.Key_Equal:
+            self._zoom_in()
+        elif key == Qt.Key_Minus:
+            self._zoom_out()
+        elif key == Qt.Key_0 and event.modifiers() & Qt.ControlModifier:
+            self._zoom_fit()
+        else:
+            super().keyPressEvent(event)
+
     def _detect_theme(self):
-        """从父窗口检测当前主题"""
         app = QApplication.instance()
         if app:
             ss = app.styleSheet()
@@ -739,7 +1203,6 @@ class ImageEditorDialog(QDialog):
         return '深蓝暗夜'
 
     def _apply_theme(self):
-        """根据当前主题设置编辑器样式"""
         t = THEMES[self.current_theme]
         is_light = self.current_theme == '浅色经典'
         bg = t['bg']
@@ -757,72 +1220,43 @@ class ImageEditorDialog(QDialog):
             border-right: 1px solid {border};
         }}
         QWidget#editorInfoBar {{
-            background-color: {bg2};
-            color: {fg2};
-            border-bottom: 1px solid {border};
-            font-size: 11px;
+            background-color: {bg2}; color: {fg2};
+            border-bottom: 1px solid {border}; font-size: 11px;
         }}
         QPushButton {{
-            background-color: {muted};
-            color: {fg};
-            border: 1px solid {border};
-            border-radius: 4px;
-            font-size: 12px;
+            background-color: {muted}; color: {fg};
+            border: 1px solid {border}; border-radius: 4px; font-size: 12px;
         }}
-        QPushButton:hover {{
-            background-color: {border};
-        }}
+        QPushButton:hover {{ background-color: {border}; }}
         QPushButton:checked {{
-            background-color: {accent};
-            color: #ffffff;
-            border-color: {accent};
+            background-color: {accent}; color: #ffffff; border-color: {accent};
         }}
-        QPushButton#mutedBtn {{
-            background-color: {muted};
-        }}
-        QPushButton#mutedBtn:hover {{
-            background-color: {border};
-        }}
-        QLabel {{
-            background-color: transparent;
-            color: {fg};
-        }}
+        QPushButton#mutedBtn {{ background-color: {muted}; }}
+        QPushButton#mutedBtn:hover {{ background-color: {border}; }}
+        QLabel {{ background-color: transparent; color: {fg}; }}
         QComboBox {{
-            background-color: {muted};
-            color: {fg};
-            border: 1px solid {border};
-            border-radius: 4px;
-            padding: 2px 4px;
-            font-size: 11px;
+            background-color: {muted}; color: {fg};
+            border: 1px solid {border}; border-radius: 4px;
+            padding: 2px 4px; font-size: 11px;
         }}
         QComboBox QAbstractItemView {{
-            background-color: {bg2};
-            color: {fg};
+            background-color: {bg2}; color: {fg};
             selection-background-color: {accent};
         }}
         QSpinBox {{
-            background-color: {muted};
-            color: {fg};
-            border: 1px solid {border};
-            border-radius: 4px;
-            padding: 2px;
-            font-size: 11px;
+            background-color: {muted}; color: {fg};
+            border: 1px solid {border}; border-radius: 4px;
+            padding: 2px; font-size: 11px;
         }}
         """)
-
-        # 更新画布背景色
         self.canvas.bg_color = QColor(245, 245, 248) if is_light else QColor(20, 20, 22)
         self.canvas.update()
 
     def _get_color(self):
-        """获取当前选择的注释颜色"""
         colors = {
-            '红色': QColor(255, 80, 80),
-            '黄色': QColor(255, 220, 50),
-            '绿色': QColor(80, 220, 80),
-            '蓝色': QColor(80, 140, 255),
-            '白色': QColor(255, 255, 255),
-            '黑色': QColor(0, 0, 0),
+            '红色': QColor(255, 80, 80), '黄色': QColor(255, 220, 50),
+            '绿色': QColor(80, 220, 80), '蓝色': QColor(80, 140, 255),
+            '白色': QColor(255, 255, 255), '黑色': QColor(0, 0, 0),
         }
         return colors.get(self.color_combo.currentText(), QColor(255, 80, 80))
 
@@ -832,7 +1266,9 @@ class ImageEditorDialog(QDialog):
         for tid, btn in self.tool_buttons.items():
             btn.setChecked(tid == tool)
         tool_names = {t[0]: t[1] for t in self.TOOLS}
-        self.info_bar.setText(f'  {os.path.basename(self.image_path)}  |  当前工具: {tool_names.get(tool, tool)}')
+        self.info_bar.setText(
+            f'  {os.path.basename(self.image_path)}  |  '
+            f'当前工具: {tool_names.get(tool, tool)}  |  Esc返回浏览')
 
     def _zoom_in(self):
         self.scale = min(self.scale * 1.25, 5.0)
@@ -859,6 +1295,13 @@ class ImageEditorDialog(QDialog):
                 self.zoom_label.setText(f'{int(self.scale * 100)}%')
                 self.canvas.update()
 
+    def _zoom_original(self):
+        self.scale = 1.0
+        self.canvas.scale = 1.0
+        self.canvas.offset = QPoint(0, 0)
+        self.zoom_label.setText('100%')
+        self.canvas.update()
+
     def _undo(self):
         if self.canvas.annotations:
             self.canvas.annotations.pop()
@@ -875,7 +1318,8 @@ class ImageEditorDialog(QDialog):
         self.accept()
 
 
-class ImageCanvas(QWidget):
+class _EditorCanvas(QWidget):
+    """编辑画布：支持多种标注工具和测量"""
     def __init__(self, editor, parent=None):
         super().__init__(parent)
         self.editor = editor
@@ -892,6 +1336,7 @@ class ImageCanvas(QWidget):
         self.last_pos = None
         self.bg_color = QColor(20, 20, 22)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def load_image(self):
         if self.image_path and os.path.exists(self.image_path):
@@ -907,7 +1352,6 @@ class ImageCanvas(QWidget):
             painter.end()
             return
 
-        # 绘制图片
         scaled = self.pixmap.scaled(
             self.pixmap.size() * self.scale,
             Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -916,7 +1360,6 @@ class ImageCanvas(QWidget):
         y = (self.height() - scaled.height()) // 2 + self.offset.y()
         painter.drawPixmap(x, y, scaled)
 
-        # 获取当前颜色和线宽
         color = self.editor._get_color()
         line_w = self.editor.line_width.value()
 
@@ -928,16 +1371,15 @@ class ImageCanvas(QWidget):
             pen = QPen(ann_color, ann_width)
             painter.setPen(pen)
             if atype == 'text':
-                text_color = ann_color
-                painter.setPen(QPen(text_color, 1))
+                painter.setPen(QPen(ann_color, 1))
                 font_size = max(10, int(14 * self.scale))
                 painter.setFont(QFont("Microsoft YaHei", font_size, QFont.Bold))
-                # 绘制文字背景（浅色主题下提高可读性）
                 fm = painter.fontMetrics()
                 text_rect = fm.boundingRect(data['text'])
                 bg_rect = QRect(data['x'] + x - 2, data['y'] + y - text_rect.height() - 2,
                                 text_rect.width() + 4, text_rect.height() + 4)
-                painter.fillRect(bg_rect, QColor(0, 0, 0, 120))
+                painter.fillRect(bg_rect, QColor(0, 0, 0, 140))
+                painter.setPen(QPen(ann_color, 1))
                 painter.drawText(data['x'] + x, data['y'] + y, data['text'])
             elif atype == 'arrow':
                 self._draw_arrow(painter, data['x1'] + x, data['y1'] + y,
@@ -946,9 +1388,33 @@ class ImageCanvas(QWidget):
                 painter.drawLine(int(data['x1'] + x), int(data['y1'] + y),
                                  int(data['x2'] + x), int(data['y2'] + y))
             elif atype == 'rect':
+                painter.setBrush(QColor(ann_color.red(), ann_color.green(), ann_color.blue(), 30))
                 painter.drawRect(data['x'] + x, data['y'] + y, data['w'], data['h'])
+                painter.setBrush(Qt.NoBrush)
             elif atype == 'circle':
+                painter.setBrush(QColor(ann_color.red(), ann_color.green(), ann_color.blue(), 30))
                 painter.drawEllipse(data['x'] + x, data['y'] + y, data['w'], data['h'])
+                painter.setBrush(Qt.NoBrush)
+            elif atype == 'measure':
+                painter.drawLine(int(data['x1'] + x), int(data['y1'] + y),
+                                 int(data['x2'] + x), int(data['y2'] + y))
+                # 绘制端点
+                painter.setBrush(ann_color)
+                painter.drawEllipse(QPoint(int(data['x1'] + x), int(data['y1'] + y)), 3, 3)
+                painter.drawEllipse(QPoint(int(data['x2'] + x), int(data['y2'] + y)), 3, 3)
+                painter.setBrush(Qt.NoBrush)
+                # 绘制测量文字
+                dist = data.get('distance', '')
+                if dist:
+                    mx = (data['x1'] + data['x2']) / 2 + x
+                    my = (data['y1'] + data['y2']) / 2 + y - 8
+                    painter.setFont(QFont("Microsoft YaHei", max(9, int(11 * self.scale)), QFont.Bold))
+                    painter.setPen(QPen(ann_color, 1))
+                    fm = painter.fontMetrics()
+                    tr = fm.boundingRect(dist)
+                    painter.fillRect(QRect(mx - 2, my - tr.height() - 2, tr.width() + 4, tr.height() + 4),
+                                     QColor(0, 0, 0, 160))
+                    painter.drawText(int(mx), int(my), dist)
 
         # 绘制当前正在绘制的图形
         if self.drawing and self.draw_start and self.draw_current:
@@ -964,13 +1430,32 @@ class ImageCanvas(QWidget):
                 ry = min(self.draw_start.y(), self.draw_current.y())
                 rw = abs(self.draw_current.x() - self.draw_start.x())
                 rh = abs(self.draw_current.y() - self.draw_start.y())
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 30))
                 painter.drawRect(rx, ry, rw, rh)
+                painter.setBrush(Qt.NoBrush)
             elif self.tool == 'circle':
                 rx = min(self.draw_start.x(), self.draw_current.x())
                 ry = min(self.draw_start.y(), self.draw_current.y())
                 rw = abs(self.draw_current.x() - self.draw_start.x())
                 rh = abs(self.draw_current.y() - self.draw_start.y())
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 30))
                 painter.drawEllipse(rx, ry, rw, rh)
+                painter.setBrush(Qt.NoBrush)
+            elif self.tool == 'measure':
+                painter.drawLine(self.draw_start, self.draw_current)
+                painter.setBrush(color)
+                painter.drawEllipse(self.draw_start, 3, 3)
+                painter.drawEllipse(self.draw_current, 3, 3)
+                painter.setBrush(Qt.NoBrush)
+                # 实时显示距离
+                dx = abs(self.draw_current.x() - self.draw_start.x()) / self.scale
+                dy = abs(self.draw_current.y() - self.draw_start.y()) / self.scale
+                dist_px = (dx**2 + dy**2) ** 0.5
+                painter.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+                painter.setPen(QPen(color, 1))
+                mx = (self.draw_start.x() + self.draw_current.x()) / 2
+                my = (self.draw_start.y() + self.draw_current.y()) / 2 - 8
+                painter.drawText(int(mx), int(my), f'{dist_px:.1f}px')
 
         painter.end()
 
@@ -991,7 +1476,6 @@ class ImageCanvas(QWidget):
         painter.setBrush(Qt.NoBrush)
 
     def _img_coords(self, pos):
-        """将屏幕坐标转换为图片相对坐标"""
         if not self.pixmap:
             return pos.x(), pos.y()
         scaled = self.pixmap.scaled(
@@ -1003,13 +1487,12 @@ class ImageCanvas(QWidget):
         return pos.x() - x, pos.y() - y
 
     def _find_annotation_at(self, img_x, img_y, threshold=15):
-        """查找指定坐标附近的注释索引"""
         for i in range(len(self.annotations) - 1, -1, -1):
             atype, data = self.annotations[i]
             if atype == 'text':
                 if abs(data['x'] - img_x) < 50 and abs(data['y'] - img_y) < 30:
                     return i
-            elif atype in ('arrow', 'line'):
+            elif atype in ('arrow', 'line', 'measure'):
                 mx = (data['x1'] + data['x2']) / 2
                 my = (data['y1'] + data['y2']) / 2
                 if abs(mx - img_x) < threshold * 3 and abs(my - img_y) < threshold * 3:
@@ -1022,12 +1505,20 @@ class ImageCanvas(QWidget):
                     return i
         return -1
 
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self.editor._zoom_in()
+        else:
+            self.editor._zoom_out()
+
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
         if self.tool == 'pan':
             self.dragging = True
             self.last_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
         elif self.tool == 'text':
             ix, iy = self._img_coords(event.pos())
             from PyQt5.QtWidgets import QInputDialog
@@ -1066,6 +1557,7 @@ class ImageCanvas(QWidget):
         if self.dragging:
             self.dragging = False
             self.last_pos = None
+            self.setCursor(Qt.ArrowCursor)
         elif self.drawing and self.draw_start and self.draw_current:
             ix1, iy1 = self._img_coords(self.draw_start)
             ix2, iy2 = self._img_coords(self.draw_current)
@@ -1095,13 +1587,21 @@ class ImageCanvas(QWidget):
                     'x': rx, 'y': ry, 'w': abs(ix2 - ix1), 'h': abs(iy2 - iy1),
                     'color': color, 'width': width
                 }))
+            elif self.tool == 'measure':
+                dx = abs(ix2 - ix1)
+                dy = abs(iy2 - iy1)
+                dist = (dx**2 + dy**2) ** 0.5
+                self.annotations.append(('measure', {
+                    'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2,
+                    'distance': f'{dist:.1f}px',
+                    'color': color, 'width': width
+                }))
             self.drawing = False
             self.draw_start = None
             self.draw_current = None
             self.update()
 
     def save_annotated(self, path):
-        """保存带注释的图片"""
         if not self.pixmap:
             return
         result = QPixmap(self.pixmap.size())
@@ -1128,6 +1628,18 @@ class ImageCanvas(QWidget):
                 painter.drawRect(data['x'], data['y'], data['w'], data['h'])
             elif atype == 'circle':
                 painter.drawEllipse(data['x'], data['y'], data['w'], data['h'])
+            elif atype == 'measure':
+                painter.drawLine(int(data['x1']), int(data['y1']), int(data['x2']), int(data['y2']))
+                painter.setBrush(color)
+                painter.drawEllipse(QPoint(int(data['x1']), int(data['y1'])), 3, 3)
+                painter.drawEllipse(QPoint(int(data['x2']), int(data['y2'])), 3, 3)
+                painter.setBrush(Qt.NoBrush)
+                dist = data.get('distance', '')
+                if dist:
+                    painter.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+                    mx = (data['x1'] + data['x2']) / 2
+                    my = (data['y1'] + data['y2']) / 2 - 8
+                    painter.drawText(int(mx), int(my), dist)
 
         painter.end()
         base, ext = os.path.splitext(path)
@@ -1363,10 +1875,21 @@ class DetailPanel(QWidget):
                 self.thumb_list.addItem(item)
 
     def _on_thumb_double_clicked(self, item):
-        img_path = item.data(Qt.UserRole + 1)
-        if img_path and os.path.exists(img_path):
-            editor = ImageEditorDialog(img_path, self)
-            editor.exec_()
+        # 收集当前所有图片路径
+        image_paths = []
+        current_idx = 0
+        clicked_img_id = item.data(Qt.UserRole)
+        for i in range(self.thumb_list.count()):
+            it = self.thumb_list.item(i)
+            img_id = it.data(Qt.UserRole)
+            img_path = it.data(Qt.UserRole + 1)
+            if img_id is not None and img_path and os.path.exists(img_path):
+                image_paths.append((img_id, img_path))
+                if img_id == clicked_img_id:
+                    current_idx = len(image_paths) - 1
+        if image_paths:
+            viewer = ImageViewerDialog(image_paths, current_idx, self)
+            viewer.exec_()
 
     def _show_medical_tab(self):
         if not self.current_disease_id:
@@ -1440,6 +1963,12 @@ class MainWindow(QMainWindow):
         user_action = QAction('用户管理', self)
         user_action.triggered.connect(self.show_user_manage)
         file_menu.addAction(user_action)
+
+        file_menu.addSeparator()
+
+        ai_config_action = QAction('AI 配置', self)
+        ai_config_action.triggered.connect(self.show_ai_config)
+        file_menu.addAction(ai_config_action)
 
         # 主题菜单
         theme_menu = menubar.addMenu('主题')
@@ -1756,6 +2285,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, '提示', '仅管理员可管理用户')
             return
         dlg = UserManageDialog(self)
+        dlg.exec_()
+
+    def show_ai_config(self):
+        dlg = AIConfigDialog(self)
         dlg.exec_()
 
     # ── 搜索 ──
