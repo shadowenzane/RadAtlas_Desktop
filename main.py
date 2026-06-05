@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import math
 import sqlite3
 import shutil
 import requests
@@ -11,10 +12,11 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QTabWidget, QDialog,
     QMessageBox, QStatusBar, QFrame, QGroupBox, QSizePolicy,
     QScrollArea, QComboBox, QFileDialog, QMenu, QMenuBar,
-    QAction, QCompleter, QToolBar, QSpinBox, QCheckBox
+    QAction, QCompleter, QToolBar, QSpinBox, QCheckBox,
+    QInputDialog, QSlider, QGridLayout
 )
 from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QPoint, QTimer
-from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QPixmap, QPainter, QPen
+from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QPixmap, QPainter, QPen, QPolygon, QBrush
 
 from models import (
     init_user_db, authenticate_user, init_db, load_data,
@@ -763,15 +765,18 @@ class ImageViewerDialog(QDialog):
 
         btn_prev = QPushButton('< 上一张')
         btn_prev.setFixedHeight(32)
+        btn_prev.setFont(QFont("SimSun", 10))
         btn_prev.clicked.connect(self._prev_image)
         top_bar.addWidget(btn_prev)
 
         self.page_label = QLabel()
-        self.page_label.setStyleSheet("background: transparent; font-size: 12px;")
+        self.page_label.setFont(QFont("SimSun", 9))
+        self.page_label.setStyleSheet("background: transparent; font-size: 9px;")
         top_bar.addWidget(self.page_label)
 
         btn_next = QPushButton('下一张 >')
         btn_next.setFixedHeight(32)
+        btn_next.setFont(QFont("SimSun", 10))
         btn_next.clicked.connect(self._next_image)
         top_bar.addWidget(btn_next)
 
@@ -779,28 +784,33 @@ class ImageViewerDialog(QDialog):
 
         btn_zoom_out = QPushButton('-')
         btn_zoom_out.setFixedSize(32, 32)
+        btn_zoom_out.setFont(QFont("SimSun", 10))
         btn_zoom_out.clicked.connect(self._zoom_out)
         top_bar.addWidget(btn_zoom_out)
 
         self.zoom_label = QLabel('100%')
         self.zoom_label.setFixedWidth(50)
-        self.zoom_label.setStyleSheet("background: transparent; font-size: 12px;")
+        self.zoom_label.setFont(QFont("SimSun", 9))
+        self.zoom_label.setStyleSheet("background: transparent; font-size: 9px;")
         top_bar.addWidget(self.zoom_label)
 
         btn_zoom_in = QPushButton('+')
         btn_zoom_in.setFixedSize(32, 32)
+        btn_zoom_in.setFont(QFont("SimSun", 10))
         btn_zoom_in.clicked.connect(self._zoom_in)
         top_bar.addWidget(btn_zoom_in)
 
         btn_fit = QPushButton('适应')
         btn_fit.setObjectName('mutedBtn')
         btn_fit.setFixedSize(50, 32)
+        btn_fit.setFont(QFont("SimSun", 10))
         btn_fit.clicked.connect(self._zoom_fit)
         top_bar.addWidget(btn_fit)
 
         btn_orig = QPushButton('1:1')
         btn_orig.setObjectName('mutedBtn')
         btn_orig.setFixedSize(40, 32)
+        btn_orig.setFont(QFont("SimSun", 10))
         btn_orig.clicked.connect(self._zoom_original)
         top_bar.addWidget(btn_orig)
 
@@ -808,12 +818,14 @@ class ImageViewerDialog(QDialog):
 
         btn_edit = QPushButton('编辑图片')
         btn_edit.setFixedHeight(32)
+        btn_edit.setFont(QFont("SimSun", 10))
         btn_edit.clicked.connect(self._enter_edit)
         top_bar.addWidget(btn_edit)
 
         btn_close = QPushButton('关闭')
         btn_close.setObjectName('mutedBtn')
         btn_close.setFixedSize(60, 32)
+        btn_close.setFont(QFont("SimSun", 10))
         btn_close.clicked.connect(self.reject)
         top_bar.addWidget(btn_close)
 
@@ -826,6 +838,7 @@ class ImageViewerDialog(QDialog):
         # 底部提示
         hint = QLabel('  双击图片进入编辑模式  |  滚轮缩放  |  拖拽平移')
         hint.setFixedHeight(24)
+        hint.setFont(QFont("SimSun", 9))
         hint.setObjectName('editorInfoBar')
         layout.addWidget(hint)
 
@@ -855,16 +868,18 @@ class ImageViewerDialog(QDialog):
         QDialog {{ background-color: {bg}; }}
         QWidget#editorInfoBar {{
             background-color: {bg2}; color: {fg2};
-            border-top: 1px solid {border}; font-size: 11px;
+            border-top: 1px solid {border}; font-size: 9px;
+            font-family: "SimSun";
         }}
         QPushButton {{
             background-color: {muted}; color: {fg};
-            border: 1px solid {border}; border-radius: 4px; font-size: 12px;
+            border: 1px solid {border}; border-radius: 4px; font-size: 10px;
+            font-family: "SimSun";
         }}
         QPushButton:hover {{ background-color: {border}; }}
         QPushButton#mutedBtn {{ background-color: {muted}; }}
         QPushButton#mutedBtn:hover {{ background-color: {border}; }}
-        QLabel {{ background-color: transparent; color: {fg}; }}
+        QLabel {{ background-color: transparent; color: {fg}; font-family: "SimSun"; }}
         """)
         self.viewer_canvas.bg_color = QColor(245, 245, 248) if is_light else QColor(20, 20, 22)
         self.viewer_canvas.update()
@@ -1009,24 +1024,427 @@ class _ViewerCanvas(QWidget):
 
 
 # ── 图片编辑器 ────────────────────────────────────────────
-class ImageEditorDialog(QDialog):
-    """图片编辑器：参考专业标注工具设计，支持多种标注和测量"""
 
-    TOOLS = [
-        ('pan', '移动', '拖拽移动图片 (V)'),
-        ('text', '文字', '点击添加文字注释 (T)'),
-        ('arrow', '箭头', '拖拽绘制箭头 (A)'),
-        ('line', '直线', '拖拽绘制直线 (L)'),
-        ('rect', '矩形', '拖拽绘制矩形 (R)'),
-        ('circle', '圆形', '拖拽绘制圆形 (C)'),
-        ('measure', '测量', '拖拽测量距离 (M)'),
-        ('eraser', '橡皮擦', '点击删除注释 (E)'),
-    ]
+# 预定义颜色
+_ANNOTATION_COLORS = [
+    QColor(255, 80, 80),   # 红
+    QColor(255, 220, 50),  # 黄
+    QColor(80, 220, 80),   # 绿
+    QColor(80, 140, 255),  # 蓝
+    QColor(255, 255, 255), # 白
+    QColor(0, 0, 0),       # 黑
+]
+
+
+class _ToolButton(QWidget):
+    """浮动工具栏中的图标按钮"""
+    clicked = pyqtSignal()
+
+    def __init__(self, tool_id, parent=None):
+        super().__init__(parent)
+        self.tool_id = tool_id
+        self.setFixedSize(36, 36)
+        self._hover = False
+        self._selected = False
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set_selected(self, sel):
+        self._selected = sel
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        # 背景
+        if self._selected:
+            painter.fillRect(r, QColor(63, 123, 247, 180))
+        elif self._hover:
+            painter.fillRect(r, QColor(255, 255, 255, 30))
+        # 绘制图标
+        painter.setPen(QPen(QColor(220, 220, 225), 2))
+        cx, cy = r.center().x(), r.center().y()
+        tid = self.tool_id
+        if tid == 'select':
+            # 光标箭头
+            pts = [QPoint(cx - 6, cy - 8), QPoint(cx - 6, cy + 6),
+                   QPoint(cx - 2, cy + 2), QPoint(cx + 2, cy + 8),
+                   QPoint(cx + 4, cy + 6), QPoint(cx, cy + 0),
+                   QPoint(cx + 6, cy + 0)]
+            painter.drawPolyline(QPolygon(pts))
+        elif tid == 'pan':
+            # 四向箭头
+            painter.drawLine(cx, cy - 8, cx, cy + 8)
+            painter.drawLine(cx - 8, cy, cx + 8, cy)
+            for dx, dy in [(0, -8), (0, 8), (-8, 0), (8, 0)]:
+                ex, ey = cx + dx, cy + dy
+                if dx != 0:
+                    painter.drawLine(ex, ey, ex - (2 if dx > 0 else -2), ey - 3)
+                    painter.drawLine(ex, ey, ex - (2 if dx > 0 else -2), ey + 3)
+                else:
+                    painter.drawLine(ex, ey, ex - 3, ey - (2 if dy > 0 else -2))
+                    painter.drawLine(ex, ey, ex + 3, ey - (2 if dy > 0 else -2))
+        elif tid == 'text':
+            painter.setFont(QFont("SimSun", 16, QFont.Bold))
+            painter.drawText(r, Qt.AlignCenter, 'T')
+        elif tid == 'arrow':
+            painter.drawLine(cx - 7, cy + 7, cx + 5, cy - 5)
+            pts = [QPoint(cx + 5, cy - 5), QPoint(cx + 1, cy - 3), QPoint(cx + 3, cy - 1)]
+            painter.setBrush(QColor(220, 220, 225))
+            painter.drawPolygon(QPolygon(pts))
+            painter.setBrush(Qt.NoBrush)
+        elif tid == 'line':
+            painter.drawLine(cx - 8, cy + 8, cx + 8, cy - 8)
+        elif tid == 'rect':
+            painter.drawRect(cx - 8, cy - 6, 16, 12)
+        elif tid == 'circle':
+            painter.drawEllipse(cx - 7, cy - 7, 14, 14)
+        elif tid == 'measure':
+            painter.drawLine(cx - 8, cy + 4, cx + 8, cy - 4)
+            painter.setBrush(QColor(220, 220, 225))
+            painter.drawEllipse(QPoint(cx - 8, cy + 4), 2, 2)
+            painter.drawEllipse(QPoint(cx + 8, cy - 4), 2, 2)
+            painter.setBrush(Qt.NoBrush)
+        elif tid == 'eraser':
+            painter.drawRect(cx - 6, cy - 2, 12, 10)
+            pts = [QPoint(cx - 6, cy - 2), QPoint(cx - 2, cy - 8), QPoint(cx + 6, cy - 8), QPoint(cx + 6, cy - 2)]
+            painter.drawPolygon(QPolygon(pts))
+        painter.end()
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+
+class _FloatingToolbar(QWidget):
+    """浮动可拖拽工具栏"""
+    tool_changed = pyqtSignal(str)
+    color_changed = pyqtSignal(QColor)
+    line_width_changed = pyqtSignal(int)
+    action_triggered = pyqtSignal(str)  # undo/clear/save/back/zoom_in/zoom_out/zoom_fit/zoom_orig
+
+    TOOLS = ['select', 'pan', 'text', 'arrow', 'line', 'rect', 'circle', 'measure', 'eraser']
+    LINE_WIDTHS = [1, 3, 5]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_tool = 'pan'
+        self.current_color_idx = 0
+        self.current_width_idx = 1
+        self._drag_pos = None
+        self.zoom_pct = 100
+
+        self.setFixedWidth(52)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+        self.setCursor(Qt.ArrowCursor)
+
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(2)
+
+        # 工具按钮
+        self.tool_btns = {}
+        for tid in self.TOOLS:
+            btn = _ToolButton(tid, self)
+            btn.clicked.connect(lambda t=tid: self._on_tool(t))
+            self.tool_btns[tid] = btn
+            layout.addWidget(btn, alignment=Qt.AlignCenter)
+
+        layout.addSpacing(4)
+
+        # 缩放
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.HLine)
+        sep1.setFixedHeight(1)
+        sep1.setStyleSheet("background-color: rgba(255,255,255,30);")
+        layout.addWidget(sep1)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.setSpacing(2)
+        btn_zo = QPushButton('-')
+        btn_zo.setFixedSize(20, 20)
+        btn_zo.setFont(QFont("SimSun", 10))
+        btn_zo.clicked.connect(lambda: self.action_triggered.emit('zoom_out'))
+        zoom_row.addWidget(btn_zo)
+        self.zoom_label = QLabel('100%')
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.zoom_label.setFont(QFont("SimSun", 8))
+        self.zoom_label.setStyleSheet("color: #ccc; background: transparent;")
+        self.zoom_label.setFixedWidth(32)
+        zoom_row.addWidget(self.zoom_label)
+        btn_zi = QPushButton('+')
+        btn_zi.setFixedSize(20, 20)
+        btn_zi.setFont(QFont("SimSun", 10))
+        btn_zi.clicked.connect(lambda: self.action_triggered.emit('zoom_in'))
+        zoom_row.addWidget(btn_zi)
+        layout.addLayout(zoom_row)
+
+        layout.addSpacing(2)
+
+        # 颜色选择
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background-color: rgba(255,255,255,30);")
+        layout.addWidget(sep2)
+
+        color_grid = QGridLayout()
+        color_grid.setSpacing(2)
+        self.color_btns = []
+        for i, c in enumerate(_ANNOTATION_COLORS):
+            btn = QPushButton()
+            btn.setFixedSize(14, 14)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                f"background-color: {c.name()}; border: 2px solid "
+                f"{'#3f7bf7' if i == 0 else '#555'}; border-radius: 7px;"
+            )
+            btn.clicked.connect(lambda idx=i: self._on_color(idx))
+            self.color_btns.append(btn)
+            color_grid.addWidget(btn, i // 3, i % 3)
+        layout.addLayout(color_grid)
+
+        layout.addSpacing(2)
+
+        # 线宽
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.HLine)
+        sep3.setFixedHeight(1)
+        sep3.setStyleSheet("background-color: rgba(255,255,255,30);")
+        layout.addWidget(sep3)
+
+        width_row = QHBoxLayout()
+        width_row.setSpacing(2)
+        self.width_btns = []
+        for i, w in enumerate(self.LINE_WIDTHS):
+            btn = QPushButton()
+            btn.setFixedSize(14, 14)
+            btn.setCursor(Qt.PointingHandCursor)
+            border = '#3f7bf7' if i == self.current_width_idx else '#555'
+            btn.setStyleSheet(
+                f"background-color: #888; border: 2px solid {border}; border-radius: 3px;"
+            )
+            btn.clicked.connect(lambda idx=i: self._on_width(idx))
+            self.width_btns.append(btn)
+            width_row.addWidget(btn)
+        layout.addLayout(width_row)
+
+        layout.addSpacing(4)
+
+        # 操作按钮
+        sep4 = QFrame()
+        sep4.setFrameShape(QFrame.HLine)
+        sep4.setFixedHeight(1)
+        sep4.setStyleSheet("background-color: rgba(255,255,255,30);")
+        layout.addWidget(sep4)
+
+        action_icons = [
+            ('undo', '↩'), ('clear', '✕'), ('save', '✓'), ('back', '←'),
+        ]
+        self.action_btns = {}
+        for aid, icon in action_icons:
+            btn = QPushButton(icon)
+            btn.setFixedSize(36, 24)
+            btn.setFont(QFont("SimSun", 10))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda a=aid: self.action_triggered.emit(a))
+            self.action_btns[aid] = btn
+            layout.addWidget(btn, alignment=Qt.AlignCenter)
+
+        layout.addStretch()
+        self.tool_btns['pan'].set_selected(True)
+
+    def _on_tool(self, tid):
+        self.current_tool = tid
+        for k, btn in self.tool_btns.items():
+            btn.set_selected(k == tid)
+        self.tool_changed.emit(tid)
+
+    def _on_color(self, idx):
+        self.current_color_idx = idx
+        for i, btn in enumerate(self.color_btns):
+            border = '#3f7bf7' if i == idx else '#555'
+            c = _ANNOTATION_COLORS[i]
+            btn.setStyleSheet(
+                f"background-color: {c.name()}; border: 2px solid {border}; border-radius: 7px;"
+            )
+        self.color_changed.emit(_ANNOTATION_COLORS[idx])
+
+    def _on_width(self, idx):
+        self.current_width_idx = idx
+        for i, btn in enumerate(self.width_btns):
+            border = '#3f7bf7' if i == idx else '#555'
+            btn.setStyleSheet(
+                f"background-color: #888; border: 2px solid {border}; border-radius: 3px;"
+            )
+        self.line_width_changed.emit(self.LINE_WIDTHS[idx])
+
+    def set_zoom_pct(self, pct):
+        self.zoom_pct = pct
+        self.zoom_label.setText(f'{pct}%')
+
+    def get_color(self):
+        return _ANNOTATION_COLORS[self.current_color_idx]
+
+    def get_line_width(self):
+        return self.LINE_WIDTHS[self.current_width_idx]
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(30, 30, 35, 210))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self.rect(), 10, 10)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.LeftButton:
+            delta = event.pos() - self._drag_pos
+            self.move(self.pos() + delta)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+
+class _PropertyPanel(QWidget):
+    """选中注释时的属性面板"""
+    color_changed = pyqtSignal(QColor)
+    bg_color_changed = pyqtSignal(object)  # QColor or None
+    opacity_changed = pyqtSignal(int)
+    rotation_changed = pyqtSignal(float)
+    delete_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(140)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+        self.hide()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        title = QLabel('属性')
+        title.setFont(QFont("SimSun", 9, QFont.Bold))
+        title.setStyleSheet("color: #ccc; background: transparent;")
+        layout.addWidget(title)
+
+        # 颜色
+        cl = QLabel('颜色')
+        cl.setFont(QFont("SimSun", 8))
+        cl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(cl)
+        color_row = QHBoxLayout()
+        color_row.setSpacing(2)
+        self.color_btns = []
+        for i, c in enumerate(_ANNOTATION_COLORS):
+            btn = QPushButton()
+            btn.setFixedSize(14, 14)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(f"background-color: {c.name()}; border: 1px solid #555; border-radius: 7px;")
+            btn.clicked.connect(lambda idx=i: self.color_changed.emit(_ANNOTATION_COLORS[idx]))
+            self.color_btns.append(btn)
+            color_row.addWidget(btn)
+        layout.addLayout(color_row)
+
+        # 背景颜色
+        bgl = QLabel('背景色')
+        bgl.setFont(QFont("SimSun", 8))
+        bgl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(bgl)
+        bg_row = QHBoxLayout()
+        bg_row.setSpacing(2)
+        self.bg_btns = []
+        for i, c in enumerate(_ANNOTATION_COLORS):
+            btn = QPushButton()
+            btn.setFixedSize(14, 14)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(f"background-color: {c.name()}; border: 1px solid #555; border-radius: 7px;")
+            btn.clicked.connect(lambda idx=i: self.bg_color_changed.emit(_ANNOTATION_COLORS[idx]))
+            self.bg_btns.append(btn)
+            bg_row.addWidget(btn)
+        # 无背景色按钮
+        btn_none = QPushButton('无')
+        btn_none.setFixedSize(14, 14)
+        btn_none.setFont(QFont("SimSun", 7))
+        btn_none.setCursor(Qt.PointingHandCursor)
+        btn_none.setStyleSheet("background-color: transparent; border: 1px solid #555; border-radius: 7px; color: #aaa;")
+        btn_none.clicked.connect(lambda: self.bg_color_changed.emit(None))
+        bg_row.addWidget(btn_none)
+        layout.addLayout(bg_row)
+
+        # 透明度
+        ol = QLabel('透明度')
+        ol.setFont(QFont("SimSun", 8))
+        ol.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(ol)
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(0, 100)
+        self.opacity_slider.setValue(55)
+        self.opacity_slider.valueChanged.connect(lambda v: self.opacity_changed.emit(v))
+        layout.addWidget(self.opacity_slider)
+
+        # 旋转
+        rl = QLabel('旋转')
+        rl.setFont(QFont("SimSun", 8))
+        rl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(rl)
+        self.rotation_input = QSpinBox()
+        self.rotation_input.setRange(0, 360)
+        self.rotation_input.setValue(0)
+        self.rotation_input.setFont(QFont("SimSun", 9))
+        self.rotation_input.setSuffix('°')
+        self.rotation_input.valueChanged.connect(lambda v: self.rotation_changed.emit(float(v)))
+        layout.addWidget(self.rotation_input)
+
+        # 删除
+        del_btn = QPushButton('删除')
+        del_btn.setFont(QFont("SimSun", 9))
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.clicked.connect(self.delete_requested.emit)
+        layout.addWidget(del_btn)
+
+    def set_annotation(self, data):
+        """根据注释数据更新面板"""
+        self.rotation_input.blockSignals(True)
+        self.opacity_slider.blockSignals(True)
+        self.rotation_input.setValue(int(data.get('rotation', 0)))
+        bg_opacity = data.get('bg_opacity', 140)
+        self.opacity_slider.setValue(int(bg_opacity * 100 / 255))
+        self.rotation_input.blockSignals(False)
+        self.opacity_slider.blockSignals(False)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(30, 30, 35, 220))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self.rect(), 8, 8)
+        painter.end()
+
+
+class ImageEditorDialog(QDialog):
+    """图片编辑器：浮动工具栏 + 选择/变换系统"""
 
     TOOL_SHORTCUTS = {
         Qt.Key_V: 'pan', Qt.Key_T: 'text', Qt.Key_A: 'arrow',
         Qt.Key_L: 'line', Qt.Key_R: 'rect', Qt.Key_C: 'circle',
-        Qt.Key_M: 'measure', Qt.Key_E: 'eraser',
+        Qt.Key_M: 'measure', Qt.Key_E: 'eraser', Qt.Key_S: 'select',
     }
 
     def __init__(self, image_path, parent=None):
@@ -1038,139 +1456,47 @@ class ImageEditorDialog(QDialog):
         self.tool = 'pan'
         self.current_theme = self._detect_theme()
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 左侧工具栏 ──
-        toolbar_widget = QWidget()
-        toolbar_widget.setFixedWidth(80)
-        toolbar_widget.setObjectName('editorToolbar')
-        toolbar_layout = QVBoxLayout(toolbar_widget)
-        toolbar_layout.setContentsMargins(8, 10, 8, 10)
-        toolbar_layout.setSpacing(3)
-
-        tool_title = QLabel('工具')
-        tool_title.setAlignment(Qt.AlignCenter)
-        tool_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
-        toolbar_layout.addWidget(tool_title)
-
-        self.tool_buttons = {}
-        for tool_id, tool_name, tool_tip in self.TOOLS:
-            btn = QPushButton(tool_name)
-            btn.setFixedSize(62, 30)
-            btn.setToolTip(tool_tip)
-            btn.setCheckable(True)
-            btn.setChecked(tool_id == 'pan')
-            btn.clicked.connect(lambda checked, tid=tool_id: self._set_tool(tid))
-            self.tool_buttons[tool_id] = btn
-            toolbar_layout.addWidget(btn)
-
-        toolbar_layout.addSpacing(8)
-
-        # 缩放
-        zoom_title = QLabel('缩放')
-        zoom_title.setAlignment(Qt.AlignCenter)
-        zoom_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
-        toolbar_layout.addWidget(zoom_title)
-
-        zoom_row = QHBoxLayout()
-        btn_zoom_out = QPushButton('-')
-        btn_zoom_out.setFixedSize(28, 28)
-        btn_zoom_out.clicked.connect(self._zoom_out)
-        zoom_row.addWidget(btn_zoom_out)
-        self.zoom_label = QLabel('100%')
-        self.zoom_label.setAlignment(Qt.AlignCenter)
-        self.zoom_label.setStyleSheet("background: transparent; font-size: 11px;")
-        self.zoom_label.setFixedWidth(40)
-        zoom_row.addWidget(self.zoom_label)
-        btn_zoom_in = QPushButton('+')
-        btn_zoom_in.setFixedSize(28, 28)
-        btn_zoom_in.clicked.connect(self._zoom_in)
-        zoom_row.addWidget(btn_zoom_in)
-        toolbar_layout.addLayout(zoom_row)
-
-        btn_fit = QPushButton('适应窗口')
-        btn_fit.setObjectName('mutedBtn')
-        btn_fit.setFixedSize(62, 26)
-        btn_fit.clicked.connect(self._zoom_fit)
-        toolbar_layout.addWidget(btn_fit)
-
-        btn_orig = QPushButton('原始大小')
-        btn_orig.setObjectName('mutedBtn')
-        btn_orig.setFixedSize(62, 26)
-        btn_orig.clicked.connect(self._zoom_original)
-        toolbar_layout.addWidget(btn_orig)
-
-        toolbar_layout.addSpacing(8)
-
-        # 颜色
-        color_title = QLabel('颜色')
-        color_title.setAlignment(Qt.AlignCenter)
-        color_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
-        toolbar_layout.addWidget(color_title)
-
-        self.color_combo = QComboBox()
-        self.color_combo.addItems(['红色', '黄色', '绿色', '蓝色', '白色', '黑色'])
-        self.color_combo.setFixedWidth(62)
-        toolbar_layout.addWidget(self.color_combo)
-
-        # 线宽
-        width_title = QLabel('线宽')
-        width_title.setAlignment(Qt.AlignCenter)
-        width_title.setStyleSheet("font-weight: bold; font-size: 12px; background: transparent;")
-        toolbar_layout.addWidget(width_title)
-        self.line_width = QSpinBox()
-        self.line_width.setRange(1, 10)
-        self.line_width.setValue(2)
-        self.line_width.setFixedWidth(62)
-        toolbar_layout.addWidget(self.line_width)
-
-        toolbar_layout.addStretch()
-
-        # 操作按钮
-        btn_undo = QPushButton('撤销')
-        btn_undo.setObjectName('mutedBtn')
-        btn_undo.setFixedSize(62, 28)
-        btn_undo.clicked.connect(self._undo)
-        toolbar_layout.addWidget(btn_undo)
-
-        btn_clear = QPushButton('清空')
-        btn_clear.setObjectName('mutedBtn')
-        btn_clear.setFixedSize(62, 28)
-        btn_clear.clicked.connect(self._clear)
-        toolbar_layout.addWidget(btn_clear)
-
-        btn_save = QPushButton('保存')
-        btn_save.setFixedSize(62, 28)
-        btn_save.clicked.connect(self._save)
-        toolbar_layout.addWidget(btn_save)
-
-        btn_back = QPushButton('返回浏览')
-        btn_back.setObjectName('mutedBtn')
-        btn_back.setFixedSize(62, 28)
-        btn_back.clicked.connect(self.accept)
-        toolbar_layout.addWidget(btn_back)
-
-        layout.addWidget(toolbar_widget)
-
-        # ── 右侧画布区 ──
-        right = QVBoxLayout()
-        right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(0)
-
+        # 信息栏
         info_bar = QLabel(f'  {os.path.basename(image_path)}  |  当前工具: 移动  |  Esc返回浏览')
         info_bar.setFixedHeight(26)
         info_bar.setObjectName('editorInfoBar')
+        info_bar.setFont(QFont("SimSun", 9))
         self.info_bar = info_bar
-        right.addWidget(info_bar)
+        layout.addWidget(info_bar)
+
+        # 画布容器（用于叠放浮动工具栏和属性面板）
+        self.canvas_container = QWidget()
+        container_layout = QVBoxLayout(self.canvas_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
 
         self.canvas = _EditorCanvas(self)
         self.canvas.image_path = image_path
         self.canvas.load_image()
-        right.addWidget(self.canvas, stretch=1)
+        container_layout.addWidget(self.canvas)
 
-        layout.addLayout(right, stretch=1)
+        # 浮动工具栏
+        self.toolbar = _FloatingToolbar(self.canvas_container)
+        self.toolbar.move(10, 10)
+        self.toolbar.show()
+        self.toolbar.tool_changed.connect(self._set_tool)
+        self.toolbar.color_changed.connect(self._on_color_changed)
+        self.toolbar.line_width_changed.connect(self._on_width_changed)
+        self.toolbar.action_triggered.connect(self._on_action)
+
+        # 属性面板
+        self.prop_panel = _PropertyPanel(self.canvas_container)
+        self.prop_panel.move(70, 10)
+        self.prop_panel.color_changed.connect(self._on_prop_color)
+        self.prop_panel.bg_color_changed.connect(self._on_prop_bg_color)
+        self.prop_panel.opacity_changed.connect(self._on_prop_opacity)
+        self.prop_panel.rotation_changed.connect(self._on_prop_rotation)
+        self.prop_panel.delete_requested.connect(self._on_prop_delete)
+
+        layout.addWidget(self.canvas_container, stretch=1)
 
         self._apply_theme()
 
@@ -1182,7 +1508,7 @@ class ImageEditorDialog(QDialog):
             self.accept()
         elif key == Qt.Key_Z and event.modifiers() & Qt.ControlModifier:
             self._undo()
-        elif key == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
+        elif key == Qt.Key_Y and event.modifiers() & Qt.ControlModifier:
             self._save()
         elif key == Qt.Key_Plus or key == Qt.Key_Equal:
             self._zoom_in()
@@ -1190,6 +1516,8 @@ class ImageEditorDialog(QDialog):
             self._zoom_out()
         elif key == Qt.Key_0 and event.modifiers() & Qt.ControlModifier:
             self._zoom_fit()
+        elif key == Qt.Key_Delete:
+            self._delete_selected()
         else:
             super().keyPressEvent(event)
 
@@ -1215,71 +1543,86 @@ class ImageEditorDialog(QDialog):
 
         self.setStyleSheet(f"""
         QDialog {{ background-color: {bg}; }}
-        QWidget#editorToolbar {{
-            background-color: {bg2};
-            border-right: 1px solid {border};
-        }}
         QWidget#editorInfoBar {{
             background-color: {bg2}; color: {fg2};
-            border-bottom: 1px solid {border}; font-size: 11px;
+            border-bottom: 1px solid {border}; font-size: 9px;
+            font-family: "SimSun";
         }}
         QPushButton {{
             background-color: {muted}; color: {fg};
-            border: 1px solid {border}; border-radius: 4px; font-size: 12px;
+            border: 1px solid {border}; border-radius: 4px; font-size: 10px;
+            font-family: "SimSun";
         }}
         QPushButton:hover {{ background-color: {border}; }}
-        QPushButton:checked {{
-            background-color: {accent}; color: #ffffff; border-color: {accent};
-        }}
-        QPushButton#mutedBtn {{ background-color: {muted}; }}
-        QPushButton#mutedBtn:hover {{ background-color: {border}; }}
         QLabel {{ background-color: transparent; color: {fg}; }}
-        QComboBox {{
-            background-color: {muted}; color: {fg};
-            border: 1px solid {border}; border-radius: 4px;
-            padding: 2px 4px; font-size: 11px;
-        }}
-        QComboBox QAbstractItemView {{
-            background-color: {bg2}; color: {fg};
-            selection-background-color: {accent};
-        }}
         QSpinBox {{
             background-color: {muted}; color: {fg};
             border: 1px solid {border}; border-radius: 4px;
-            padding: 2px; font-size: 11px;
+            padding: 2px; font-size: 9px;
+        }}
+        QSlider::groove:horizontal {{
+            background: {muted}; height: 6px; border-radius: 3px;
+        }}
+        QSlider::handle:horizontal {{
+            background: {accent}; width: 12px; margin: -3px 0;
+            border-radius: 6px;
         }}
         """)
         self.canvas.bg_color = QColor(245, 245, 248) if is_light else QColor(20, 20, 22)
         self.canvas.update()
 
     def _get_color(self):
-        colors = {
-            '红色': QColor(255, 80, 80), '黄色': QColor(255, 220, 50),
-            '绿色': QColor(80, 220, 80), '蓝色': QColor(80, 140, 255),
-            '白色': QColor(255, 255, 255), '黑色': QColor(0, 0, 0),
-        }
-        return colors.get(self.color_combo.currentText(), QColor(255, 80, 80))
+        return self.toolbar.get_color()
+
+    def _get_line_width(self):
+        return self.toolbar.get_line_width()
 
     def _set_tool(self, tool):
         self.tool = tool
         self.canvas.tool = tool
-        for tid, btn in self.tool_buttons.items():
-            btn.setChecked(tid == tool)
-        tool_names = {t[0]: t[1] for t in self.TOOLS}
+        tool_names = {
+            'select': '选择', 'pan': '移动', 'text': '文字',
+            'arrow': '箭头', 'line': '直线', 'rect': '矩形',
+            'circle': '圆形', 'measure': '测量', 'eraser': '橡皮擦',
+        }
         self.info_bar.setText(
             f'  {os.path.basename(self.image_path)}  |  '
             f'当前工具: {tool_names.get(tool, tool)}  |  Esc返回浏览')
 
+    def _on_color_changed(self, color):
+        pass  # 颜色已存储在 toolbar 中
+
+    def _on_width_changed(self, width):
+        pass
+
+    def _on_action(self, action):
+        if action == 'undo':
+            self._undo()
+        elif action == 'clear':
+            self._clear()
+        elif action == 'save':
+            self._save()
+        elif action == 'back':
+            self.accept()
+        elif action == 'zoom_in':
+            self._zoom_in()
+        elif action == 'zoom_out':
+            self._zoom_out()
+        elif action == 'zoom_fit':
+            self._zoom_fit()
+        elif action == 'zoom_orig':
+            self._zoom_original()
+
     def _zoom_in(self):
         self.scale = min(self.scale * 1.25, 5.0)
         self.canvas.scale = self.scale
-        self.zoom_label.setText(f'{int(self.scale * 100)}%')
+        self.toolbar.set_zoom_pct(int(self.scale * 100))
         self.canvas.update()
 
     def _zoom_out(self):
         self.scale = max(self.scale / 1.25, 0.1)
         self.canvas.scale = self.scale
-        self.zoom_label.setText(f'{int(self.scale * 100)}%')
+        self.toolbar.set_zoom_pct(int(self.scale * 100))
         self.canvas.update()
 
     def _zoom_fit(self):
@@ -1292,34 +1635,92 @@ class ImageEditorDialog(QDialog):
                 self.scale = min(cw / pw, ch / ph) * 0.9
                 self.canvas.scale = self.scale
                 self.canvas.offset = QPoint(0, 0)
-                self.zoom_label.setText(f'{int(self.scale * 100)}%')
+                self.toolbar.set_zoom_pct(int(self.scale * 100))
                 self.canvas.update()
 
     def _zoom_original(self):
         self.scale = 1.0
         self.canvas.scale = 1.0
         self.canvas.offset = QPoint(0, 0)
-        self.zoom_label.setText('100%')
+        self.toolbar.set_zoom_pct(100)
         self.canvas.update()
 
     def _undo(self):
         if self.canvas.annotations:
             self.canvas.annotations.pop()
+            self.canvas.selected_index = -1
+            self.prop_panel.hide()
             self.canvas.update()
 
     def _clear(self):
         if self.canvas.annotations:
             if QMessageBox.question(self, '确认', '清空所有注释？') == QMessageBox.Yes:
                 self.canvas.annotations.clear()
+                self.canvas.selected_index = -1
+                self.prop_panel.hide()
                 self.canvas.update()
 
     def _save(self):
         self.canvas.save_annotated(self.image_path)
         self.accept()
 
+    def _delete_selected(self):
+        if 0 <= self.canvas.selected_index < len(self.canvas.annotations):
+            self.canvas.annotations.pop(self.canvas.selected_index)
+            self.canvas.selected_index = -1
+            self.prop_panel.hide()
+            self.canvas.update()
+
+    # 属性面板回调
+    def _on_prop_color(self, color):
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['color'] = color
+            self.canvas.update()
+
+    def _on_prop_bg_color(self, color):
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['bg_color'] = color
+            self.canvas.update()
+
+    def _on_prop_opacity(self, val):
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['bg_opacity'] = int(val * 255 / 100)
+            self.canvas.update()
+
+    def _on_prop_rotation(self, deg):
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['rotation'] = deg
+            self._update_anchor(idx)
+            self.canvas.update()
+
+    def _on_prop_delete(self):
+        self._delete_selected()
+
+    def _update_anchor(self, idx):
+        """更新注释的旋转/缩放锚点为中心"""
+        atype, data = self.canvas.annotations[idx]
+        cx, cy = self.canvas._get_annotation_center(data)
+        data['anchor_x'] = cx
+        data['anchor_y'] = cy
+
+    def show_property_panel(self, data):
+        self.prop_panel.set_annotation(data)
+        self.prop_panel.show()
+        self.prop_panel.raise_()
+
+    def hide_property_panel(self):
+        self.prop_panel.hide()
+
 
 class _EditorCanvas(QWidget):
-    """编辑画布：支持多种标注工具和测量"""
+    """编辑画布：支持选择、旋转、缩放等多种标注变换"""
+    HANDLE_SIZE = 8
+    ROTATE_HANDLE_DIST = 20
+
     def __init__(self, editor, parent=None):
         super().__init__(parent)
         self.editor = editor
@@ -1328,6 +1729,7 @@ class _EditorCanvas(QWidget):
         self.scale = 1.0
         self.tool = 'pan'
         self.annotations = []
+        self.selected_index = -1
         self.drawing = False
         self.draw_start = None
         self.draw_current = None
@@ -1335,6 +1737,9 @@ class _EditorCanvas(QWidget):
         self.dragging = False
         self.last_pos = None
         self.bg_color = QColor(20, 20, 22)
+        self._drag_handle = -1  # -1=none, 0-7=resize, 8=rotate
+        self._drag_start_pos = None
+        self._drag_start_data = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -1342,6 +1747,128 @@ class _EditorCanvas(QWidget):
         if self.image_path and os.path.exists(self.image_path):
             self.pixmap = QPixmap(self.image_path)
             self.update()
+
+    def _img_offset(self):
+        """返回图片在画布上的偏移量 (x, y)"""
+        if not self.pixmap:
+            return 0, 0
+        scaled = self.pixmap.scaled(
+            self.pixmap.size() * self.scale,
+            Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        x = (self.width() - scaled.width()) // 2 + self.offset.x()
+        y = (self.height() - scaled.height()) // 2 + self.offset.y()
+        return x, y
+
+    def _img_coords(self, pos):
+        """将画布坐标转换为图片坐标"""
+        x, y = self._img_offset()
+        return pos.x() - x, pos.y() - y
+
+    def _to_screen(self, img_x, img_y):
+        """将图片坐标转换为画布坐标"""
+        x, y = self._img_offset()
+        return img_x + x, img_y + y
+
+    @staticmethod
+    def _get_annotation_center(data):
+        """获取注释的中心点（图片坐标）"""
+        if 'x' in data and 'w' in data:
+            return data['x'] + data['w'] / 2, data['y'] + data['h'] / 2
+        elif 'x1' in data:
+            return (data['x1'] + data['x2']) / 2, (data['y1'] + data['y2']) / 2
+        elif 'x' in data and 'y' in data:
+            return data['x'], data['y']
+        return 0, 0
+
+    @staticmethod
+    def _get_annotation_bbox(data):
+        """获取注释的边界框 (x, y, w, h) 图片坐标"""
+        if 'x' in data and 'w' in data:
+            return data['x'], data['y'], data['w'], data['h']
+        elif 'x1' in data:
+            x = min(data['x1'], data['x2'])
+            y = min(data['y1'], data['y2'])
+            w = abs(data['x2'] - data['x1'])
+            h = abs(data['y2'] - data['y1'])
+            return x, y, w, h
+        elif 'x' in data and 'y' in data:
+            return data['x'] - 20, data['y'] - 20, 40, 40
+        return 0, 0, 0, 0
+
+    def _reverse_rotate_point(self, px, py, data):
+        """将画布坐标点逆旋转到注释的局部坐标系"""
+        rotation = data.get('rotation', 0)
+        if rotation == 0:
+            return px, py
+        cx, cy = data.get('anchor_x', 0), data.get('anchor_y', 0)
+        sx, sy = self._to_screen(cx, cy)
+        dx = px - sx
+        dy = py - sy
+        angle = -rotation * math.pi / 180
+        rx = dx * math.cos(angle) - dy * math.sin(angle) + sx
+        ry = dx * math.sin(angle) + dy * math.cos(angle) + sy
+        return rx, ry
+
+    def _get_handles(self, data):
+        """获取选中注释的8个缩放手柄和1个旋转手柄位置（画布坐标）"""
+        bx, by, bw, bh = self._get_annotation_bbox(data)
+        sx, sy = self._to_screen(bx, by)
+        sw, sh = bw * self.scale, bh * self.scale
+        hs = self.HANDLE_SIZE
+        # 8个缩放手柄: TL, T, TR, R, BR, B, BL, L
+        positions = [
+            (sx, sy), (sx + sw / 2, sy), (sx + sw, sy),
+            (sx + sw, sy + sh / 2), (sx + sw, sy + sh),
+            (sx + sw / 2, sy + sh), (sx, sy + sh), (sx, sy + sh / 2),
+        ]
+        # 旋转手柄
+        rot_pos = (sx + sw / 2, sy - self.ROTATE_HANDLE_DIST)
+        return positions, rot_pos
+
+    def _hit_handle(self, pos, data):
+        """检测点击了哪个手柄，返回 -1=无, 0-7=缩放, 8=旋转"""
+        positions, rot_pos = self._get_handles(data)
+        hs = self.HANDLE_SIZE
+        for i, (hx, hy) in enumerate(positions):
+            if abs(pos.x() - hx) <= hs and abs(pos.y() - hy) <= hs:
+                return i
+        rx, ry = rot_pos
+        if abs(pos.x() - rx) <= hs and abs(pos.y() - ry) <= hs:
+            return 8
+        return -1
+
+    def _find_annotation_at(self, img_x, img_y, threshold=15):
+        """查找点击位置对应的注释索引（考虑旋转）"""
+        for i in range(len(self.annotations) - 1, -1, -1):
+            atype, data = self.annotations[i]
+            rotation = data.get('rotation', 0)
+            # 逆旋转点击点
+            if rotation != 0:
+                cx, cy = data.get('anchor_x', 0), data.get('anchor_y', 0)
+                dx = img_x - cx
+                dy = img_y - cy
+                angle = -rotation * math.pi / 180
+                rx = dx * math.cos(angle) - dy * math.sin(angle) + cx
+                ry = dx * math.sin(angle) + dy * math.cos(angle) + cy
+            else:
+                rx, ry = img_x, img_y
+
+            if atype == 'text':
+                if abs(data['x'] - rx) < 50 and abs(data['y'] - ry) < 30:
+                    return i
+            elif atype in ('arrow', 'line', 'measure'):
+                mx = (data['x1'] + data['x2']) / 2
+                my = (data['y1'] + data['y2']) / 2
+                if abs(mx - rx) < threshold * 3 and abs(my - ry) < threshold * 3:
+                    return i
+            elif atype in ('rect', 'circle'):
+                cx_a = data['x'] + data['w'] / 2
+                cy_a = data['y'] + data['h'] / 2
+                if abs(cx_a - rx) < max(data['w'] / 2, threshold) and \
+                   abs(cy_a - ry) < max(data['h'] / 2, threshold):
+                    return i
+        return -1
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1356,65 +1883,135 @@ class _EditorCanvas(QWidget):
             self.pixmap.size() * self.scale,
             Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
-        x = (self.width() - scaled.width()) // 2 + self.offset.x()
-        y = (self.height() - scaled.height()) // 2 + self.offset.y()
+        x, y = self._img_offset()
         painter.drawPixmap(x, y, scaled)
 
         color = self.editor._get_color()
-        line_w = self.editor.line_width.value()
+        line_w = self.editor._get_line_width()
 
         # 绘制已有注释
-        for ann in self.annotations:
+        for ann_idx, ann in enumerate(self.annotations):
             atype, data = ann
             ann_color = data.get('color', color)
             ann_width = data.get('width', line_w)
+            rotation = data.get('rotation', 0)
+            anchor_x = data.get('anchor_x', 0)
+            anchor_y = data.get('anchor_y', 0)
+
+            if rotation != 0:
+                sx, sy = self._to_screen(anchor_x, anchor_y)
+                painter.save()
+                painter.translate(sx, sy)
+                painter.rotate(rotation)
+                painter.translate(-sx, -sy)
+
             pen = QPen(ann_color, ann_width)
             painter.setPen(pen)
+
             if atype == 'text':
                 painter.setPen(QPen(ann_color, 1))
                 font_size = max(10, int(14 * self.scale))
-                painter.setFont(QFont("Microsoft YaHei", font_size, QFont.Bold))
+                painter.setFont(QFont("SimSun", font_size, QFont.Bold))
                 fm = painter.fontMetrics()
                 text_rect = fm.boundingRect(data['text'])
-                bg_rect = QRect(data['x'] + x - 2, data['y'] + y - text_rect.height() - 2,
+                scr_x, scr_y = self._to_screen(data['x'], data['y'])
+                bg_color = data.get('bg_color')
+                bg_opacity = data.get('bg_opacity', 140)
+                bg_rect = QRect(scr_x - 2, scr_y - text_rect.height() - 2,
                                 text_rect.width() + 4, text_rect.height() + 4)
-                painter.fillRect(bg_rect, QColor(0, 0, 0, 140))
+                if bg_color:
+                    painter.fillRect(bg_rect, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), bg_opacity))
+                else:
+                    painter.fillRect(bg_rect, QColor(0, 0, 0, bg_opacity))
                 painter.setPen(QPen(ann_color, 1))
-                painter.drawText(data['x'] + x, data['y'] + y, data['text'])
+                painter.drawText(scr_x, scr_y, data['text'])
             elif atype == 'arrow':
-                self._draw_arrow(painter, data['x1'] + x, data['y1'] + y,
-                                 data['x2'] + x, data['y2'] + y, ann_color, ann_width)
+                sx1, sy1 = self._to_screen(data['x1'], data['y1'])
+                sx2, sy2 = self._to_screen(data['x2'], data['y2'])
+                self._draw_arrow(painter, sx1, sy1, sx2, sy2, ann_color, ann_width)
             elif atype == 'line':
-                painter.drawLine(int(data['x1'] + x), int(data['y1'] + y),
-                                 int(data['x2'] + x), int(data['y2'] + y))
+                sx1, sy1 = self._to_screen(data['x1'], data['y1'])
+                sx2, sy2 = self._to_screen(data['x2'], data['y2'])
+                painter.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
             elif atype == 'rect':
+                sx, sy = self._to_screen(data['x'], data['y'])
+                sw, sh = data['w'] * self.scale, data['h'] * self.scale
                 painter.setBrush(QColor(ann_color.red(), ann_color.green(), ann_color.blue(), 30))
-                painter.drawRect(data['x'] + x, data['y'] + y, data['w'], data['h'])
+                painter.drawRect(QRectF(sx, sy, sw, sh))
                 painter.setBrush(Qt.NoBrush)
             elif atype == 'circle':
+                sx, sy = self._to_screen(data['x'], data['y'])
+                sw, sh = data['w'] * self.scale, data['h'] * self.scale
                 painter.setBrush(QColor(ann_color.red(), ann_color.green(), ann_color.blue(), 30))
-                painter.drawEllipse(data['x'] + x, data['y'] + y, data['w'], data['h'])
+                painter.drawEllipse(QRectF(sx, sy, sw, sh))
                 painter.setBrush(Qt.NoBrush)
             elif atype == 'measure':
-                painter.drawLine(int(data['x1'] + x), int(data['y1'] + y),
-                                 int(data['x2'] + x), int(data['y2'] + y))
-                # 绘制端点
+                sx1, sy1 = self._to_screen(data['x1'], data['y1'])
+                sx2, sy2 = self._to_screen(data['x2'], data['y2'])
+                painter.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
                 painter.setBrush(ann_color)
-                painter.drawEllipse(QPoint(int(data['x1'] + x), int(data['y1'] + y)), 3, 3)
-                painter.drawEllipse(QPoint(int(data['x2'] + x), int(data['y2'] + y)), 3, 3)
+                painter.drawEllipse(QPoint(int(sx1), int(sy1)), 3, 3)
+                painter.drawEllipse(QPoint(int(sx2), int(sy2)), 3, 3)
                 painter.setBrush(Qt.NoBrush)
-                # 绘制测量文字
                 dist = data.get('distance', '')
                 if dist:
-                    mx = (data['x1'] + data['x2']) / 2 + x
-                    my = (data['y1'] + data['y2']) / 2 + y - 8
-                    painter.setFont(QFont("Microsoft YaHei", max(9, int(11 * self.scale)), QFont.Bold))
+                    mx = (sx1 + sx2) / 2
+                    my = (sy1 + sy2) / 2 - 8
+                    painter.setFont(QFont("SimSun", max(9, int(11 * self.scale)), QFont.Bold))
                     painter.setPen(QPen(ann_color, 1))
                     fm = painter.fontMetrics()
                     tr = fm.boundingRect(dist)
                     painter.fillRect(QRect(mx - 2, my - tr.height() - 2, tr.width() + 4, tr.height() + 4),
                                      QColor(0, 0, 0, 160))
                     painter.drawText(int(mx), int(my), dist)
+
+            if rotation != 0:
+                painter.restore()
+
+        # 绘制选中注释的选择框和手柄
+        if 0 <= self.selected_index < len(self.annotations):
+            atype, data = self.annotations[self.selected_index]
+            rotation = data.get('rotation', 0)
+            anchor_x = data.get('anchor_x', 0)
+            anchor_y = data.get('anchor_y', 0)
+
+            if rotation != 0:
+                sx, sy = self._to_screen(anchor_x, anchor_y)
+                painter.save()
+                painter.translate(sx, sy)
+                painter.rotate(rotation)
+                painter.translate(-sx, -sy)
+
+            bx, by, bw, bh = self._get_annotation_bbox(data)
+            sbx, sby = self._to_screen(bx, by)
+            sbw, sbh = bw * self.scale, bh * self.scale
+
+            # 虚线边框
+            pen = QPen(QColor(63, 123, 247), 1, Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(QRectF(sbx - 2, sby - 2, sbw + 4, sbh + 4))
+
+            # 缩放手柄
+            positions, rot_pos = self._get_handles(data)
+            hs = self.HANDLE_SIZE
+            painter.setPen(QPen(QColor(63, 123, 247), 1))
+            painter.setBrush(QColor(240, 240, 245))
+            for hx, hy in positions:
+                painter.drawRect(QRectF(hx - hs / 2, hy - hs / 2, hs, hs))
+
+            # 旋转手柄
+            rx, ry = rot_pos
+            painter.setBrush(QColor(63, 123, 247))
+            painter.drawEllipse(QPointF(rx, ry), hs / 2, hs / 2)
+            # 连接线
+            painter.setPen(QPen(QColor(63, 123, 247), 1, Qt.DashLine))
+            top_center_x = sbx + sbw / 2
+            top_center_y = sby
+            painter.drawLine(int(top_center_x), int(top_center_y), int(rx), int(ry))
+
+            if rotation != 0:
+                painter.restore()
 
         # 绘制当前正在绘制的图形
         if self.drawing and self.draw_start and self.draw_current:
@@ -1447,11 +2044,10 @@ class _EditorCanvas(QWidget):
                 painter.drawEllipse(self.draw_start, 3, 3)
                 painter.drawEllipse(self.draw_current, 3, 3)
                 painter.setBrush(Qt.NoBrush)
-                # 实时显示距离
                 dx = abs(self.draw_current.x() - self.draw_start.x()) / self.scale
                 dy = abs(self.draw_current.y() - self.draw_start.y()) / self.scale
-                dist_px = (dx**2 + dy**2) ** 0.5
-                painter.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+                dist_px = (dx ** 2 + dy ** 2) ** 0.5
+                painter.setFont(QFont("SimSun", 11, QFont.Bold))
                 painter.setPen(QPen(color, 1))
                 mx = (self.draw_start.x() + self.draw_current.x()) / 2
                 my = (self.draw_start.y() + self.draw_current.y()) / 2 - 8
@@ -1460,7 +2056,6 @@ class _EditorCanvas(QWidget):
         painter.end()
 
     def _draw_arrow(self, painter, x1, y1, x2, y2, color=None, width=2):
-        import math
         pen = QPen(color or QColor(255, 80, 80), width)
         painter.setPen(pen)
         painter.drawLine(int(x1), int(y1), int(x2), int(y2))
@@ -1470,40 +2065,9 @@ class _EditorCanvas(QWidget):
                      int(y2 - arrow_size * math.sin(angle - 0.4)))
         p2 = QPoint(int(x2 - arrow_size * math.cos(angle + 0.4)),
                      int(y2 - arrow_size * math.sin(angle + 0.4)))
-        from PyQt5.QtGui import QPolygon
         painter.setBrush(color or QColor(255, 80, 80))
         painter.drawPolygon(QPolygon([QPoint(int(x2), int(y2)), p1, p2]))
         painter.setBrush(Qt.NoBrush)
-
-    def _img_coords(self, pos):
-        if not self.pixmap:
-            return pos.x(), pos.y()
-        scaled = self.pixmap.scaled(
-            self.pixmap.size() * self.scale,
-            Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        x = (self.width() - scaled.width()) // 2 + self.offset.x()
-        y = (self.height() - scaled.height()) // 2 + self.offset.y()
-        return pos.x() - x, pos.y() - y
-
-    def _find_annotation_at(self, img_x, img_y, threshold=15):
-        for i in range(len(self.annotations) - 1, -1, -1):
-            atype, data = self.annotations[i]
-            if atype == 'text':
-                if abs(data['x'] - img_x) < 50 and abs(data['y'] - img_y) < 30:
-                    return i
-            elif atype in ('arrow', 'line', 'measure'):
-                mx = (data['x1'] + data['x2']) / 2
-                my = (data['y1'] + data['y2']) / 2
-                if abs(mx - img_x) < threshold * 3 and abs(my - img_y) < threshold * 3:
-                    return i
-            elif atype in ('rect', 'circle'):
-                cx = data['x'] + data['w'] / 2
-                cy = data['y'] + data['h'] / 2
-                if abs(cx - img_x) < max(data['w'] / 2, threshold) and \
-                   abs(cy - img_y) < max(data['h'] / 2, threshold):
-                    return i
-        return -1
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -1515,26 +2079,61 @@ class _EditorCanvas(QWidget):
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
+
+        # 选择工具
+        if self.tool == 'select':
+            # 先检查是否点击了选中注释的手柄
+            if 0 <= self.selected_index < len(self.annotations):
+                _, sel_data = self.annotations[self.selected_index]
+                handle = self._hit_handle(event.pos(), sel_data)
+                if handle >= 0:
+                    self._drag_handle = handle
+                    self._drag_start_pos = event.pos()
+                    self._drag_start_data = dict(sel_data)
+                    return
+
+            # 检查是否点击了某个注释
+            img_x, img_y = self._img_coords(event.pos())
+            idx = self._find_annotation_at(img_x, img_y)
+            if idx >= 0:
+                self.selected_index = idx
+                self.editor.show_property_panel(self.annotations[idx][1])
+            else:
+                self.selected_index = -1
+                self.editor.hide_property_panel()
+            self.update()
+            return
+
         if self.tool == 'pan':
             self.dragging = True
             self.last_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
         elif self.tool == 'text':
             ix, iy = self._img_coords(event.pos())
-            from PyQt5.QtWidgets import QInputDialog
             text, ok = QInputDialog.getText(self, '添加文字', '注释文字:')
             if ok and text:
                 color = self.editor._get_color()
+                width = self.editor._get_line_width()
                 self.annotations.append(('text', {
                     'x': ix, 'y': iy, 'text': text,
-                    'color': color, 'width': self.editor.line_width.value()
+                    'color': color, 'width': width,
+                    'rotation': 0, 'scale_x': 1.0, 'scale_y': 1.0,
+                    'bg_color': None, 'bg_opacity': 140,
+                    'anchor_x': ix, 'anchor_y': iy,
                 }))
+                self.selected_index = len(self.annotations) - 1
+                self.editor.show_property_panel(self.annotations[-1][1])
                 self.update()
         elif self.tool == 'eraser':
             ix, iy = self._img_coords(event.pos())
             idx = self._find_annotation_at(ix, iy)
             if idx >= 0:
                 self.annotations.pop(idx)
+                if self.selected_index == idx:
+                    self.selected_index = -1
+                    self.editor.hide_property_panel()
+                elif self.selected_index > idx:
+                    self.selected_index -= 1
                 self.update()
         else:
             self.drawing = True
@@ -1542,6 +2141,30 @@ class _EditorCanvas(QWidget):
             self.draw_current = event.pos()
 
     def mouseMoveEvent(self, event):
+        # 拖拽手柄
+        if self._drag_handle >= 0 and self._drag_start_pos:
+            pos = event.pos()
+            if self._drag_handle == 8:
+                # 旋转手柄
+                _, data = self.annotations[self.selected_index]
+                anchor_x = data.get('anchor_x', 0)
+                anchor_y = data.get('anchor_y', 0)
+                sx, sy = self._to_screen(anchor_x, anchor_y)
+                angle = math.atan2(pos.y() - sy, pos.x() - sx)
+                deg = math.degrees(angle) + 90  # 0度朝上
+                if deg < 0:
+                    deg += 360
+                data['rotation'] = deg % 360
+                # 更新属性面板
+                self.editor.prop_panel.rotation_input.blockSignals(True)
+                self.editor.prop_panel.rotation_input.setValue(int(deg % 360))
+                self.editor.prop_panel.rotation_input.blockSignals(False)
+            else:
+                # 缩放手柄
+                self._resize_annotation(pos)
+            self.update()
+            return
+
         if self.dragging and self.last_pos:
             delta = event.pos() - self.last_pos
             self.offset += delta
@@ -1554,6 +2177,14 @@ class _EditorCanvas(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
+
+        # 结束手柄拖拽
+        if self._drag_handle >= 0:
+            self._drag_handle = -1
+            self._drag_start_pos = None
+            self._drag_start_data = None
+            return
+
         if self.dragging:
             self.dragging = False
             self.last_pos = None
@@ -1562,44 +2193,124 @@ class _EditorCanvas(QWidget):
             ix1, iy1 = self._img_coords(self.draw_start)
             ix2, iy2 = self._img_coords(self.draw_current)
             color = self.editor._get_color()
-            width = self.editor.line_width.value()
+            width = self.editor._get_line_width()
+            base_props = {
+                'color': color, 'width': width,
+                'rotation': 0, 'scale_x': 1.0, 'scale_y': 1.0,
+                'bg_color': None, 'bg_opacity': 140,
+            }
             if self.tool == 'arrow':
-                self.annotations.append(('arrow', {
-                    'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2,
-                    'color': color, 'width': width
-                }))
+                base_props.update({'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2})
+                base_props['anchor_x'] = (ix1 + ix2) / 2
+                base_props['anchor_y'] = (iy1 + iy2) / 2
+                self.annotations.append(('arrow', base_props))
             elif self.tool == 'line':
-                self.annotations.append(('line', {
-                    'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2,
-                    'color': color, 'width': width
-                }))
+                base_props.update({'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2})
+                base_props['anchor_x'] = (ix1 + ix2) / 2
+                base_props['anchor_y'] = (iy1 + iy2) / 2
+                self.annotations.append(('line', base_props))
             elif self.tool == 'rect':
                 rx = min(ix1, ix2)
                 ry = min(iy1, iy2)
-                self.annotations.append(('rect', {
-                    'x': rx, 'y': ry, 'w': abs(ix2 - ix1), 'h': abs(iy2 - iy1),
-                    'color': color, 'width': width
-                }))
+                base_props.update({'x': rx, 'y': ry, 'w': abs(ix2 - ix1), 'h': abs(iy2 - iy1)})
+                base_props['anchor_x'] = rx + abs(ix2 - ix1) / 2
+                base_props['anchor_y'] = ry + abs(iy2 - iy1) / 2
+                self.annotations.append(('rect', base_props))
             elif self.tool == 'circle':
                 rx = min(ix1, ix2)
                 ry = min(iy1, iy2)
-                self.annotations.append(('circle', {
-                    'x': rx, 'y': ry, 'w': abs(ix2 - ix1), 'h': abs(iy2 - iy1),
-                    'color': color, 'width': width
-                }))
+                base_props.update({'x': rx, 'y': ry, 'w': abs(ix2 - ix1), 'h': abs(iy2 - iy1)})
+                base_props['anchor_x'] = rx + abs(ix2 - ix1) / 2
+                base_props['anchor_y'] = ry + abs(iy2 - iy1) / 2
+                self.annotations.append(('circle', base_props))
             elif self.tool == 'measure':
                 dx = abs(ix2 - ix1)
                 dy = abs(iy2 - iy1)
-                dist = (dx**2 + dy**2) ** 0.5
-                self.annotations.append(('measure', {
+                dist = (dx ** 2 + dy ** 2) ** 0.5
+                base_props.update({
                     'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2,
                     'distance': f'{dist:.1f}px',
-                    'color': color, 'width': width
-                }))
+                })
+                base_props['anchor_x'] = (ix1 + ix2) / 2
+                base_props['anchor_y'] = (iy1 + iy2) / 2
+                self.annotations.append(('measure', base_props))
+
+            # 自动选中新创建的注释
+            self.selected_index = len(self.annotations) - 1
+            self.editor.show_property_panel(self.annotations[-1][1])
+
             self.drawing = False
             self.draw_start = None
             self.draw_current = None
             self.update()
+
+    def _resize_annotation(self, pos):
+        """根据拖拽的缩放手柄调整注释大小"""
+        if self.selected_index < 0 or not self._drag_start_data:
+            return
+        atype, data = self.annotations[self.selected_index]
+        sd = self._drag_start_data
+        handle = self._drag_handle
+
+        # 计算鼠标移动的图片坐标偏移
+        img_x, img_y = self._img_coords(pos)
+        start_img_x = self._drag_start_pos.x() - self._img_offset()[0]
+        start_img_y = self._drag_start_pos.y() - self._img_offset()[1]
+        dx_img = img_x - start_img_x
+        dy_img = img_y - start_img_y
+
+        if 'w' in sd:
+            # rect/circle 类型
+            x, y, w, h = sd['x'], sd['y'], sd['w'], sd['h']
+            if handle == 0:  # TL
+                data['x'] = x + dx_img
+                data['y'] = y + dy_img
+                data['w'] = w - dx_img
+                data['h'] = h - dy_img
+            elif handle == 1:  # T
+                data['y'] = y + dy_img
+                data['h'] = h - dy_img
+            elif handle == 2:  # TR
+                data['y'] = y + dy_img
+                data['w'] = w + dx_img
+                data['h'] = h - dy_img
+            elif handle == 3:  # R
+                data['w'] = w + dx_img
+            elif handle == 4:  # BR
+                data['w'] = w + dx_img
+                data['h'] = h + dy_img
+            elif handle == 5:  # B
+                data['h'] = h + dy_img
+            elif handle == 6:  # BL
+                data['x'] = x + dx_img
+                data['w'] = w - dx_img
+                data['h'] = h + dy_img
+            elif handle == 7:  # L
+                data['x'] = x + dx_img
+                data['w'] = w - dx_img
+            # 确保宽高不为负
+            if data['w'] < 5:
+                data['w'] = 5
+            if data['h'] < 5:
+                data['h'] = 5
+            # 更新锚点
+            data['anchor_x'] = data['x'] + data['w'] / 2
+            data['anchor_y'] = data['y'] + data['h'] / 2
+        elif 'x1' in sd:
+            # arrow/line/measure 类型
+            x1, y1, x2, y2 = sd['x1'], sd['y1'], sd['x2'], sd['y2']
+            if handle in (0, 6, 7):  # 左侧手柄影响起点
+                data['x1'] = x1 + dx_img
+                data['y1'] = y1 + dy_img
+            if handle in (2, 3, 4):  # 右侧手柄影响终点
+                data['x2'] = x2 + dx_img
+                data['y2'] = y2 + dy_img
+            if handle == 1:  # 上中
+                data['y1'] = y1 + dy_img
+            if handle == 5:  # 下中
+                data['y2'] = y2 + dy_img
+            data['anchor_x'] = (data['x1'] + data['x2']) / 2
+            data['anchor_y'] = (data['y1'] + data['y2']) / 2
 
     def save_annotated(self, path):
         if not self.pixmap:
@@ -1613,11 +2324,32 @@ class _EditorCanvas(QWidget):
             atype, data = ann
             color = data.get('color', QColor(255, 80, 80))
             width = data.get('width', 2)
+            rotation = data.get('rotation', 0)
+            anchor_x = data.get('anchor_x', 0)
+            anchor_y = data.get('anchor_y', 0)
+
+            if rotation != 0:
+                painter.save()
+                painter.translate(anchor_x, anchor_y)
+                painter.rotate(rotation)
+                painter.translate(-anchor_x, -anchor_y)
+
             pen = QPen(color, width)
             painter.setPen(pen)
             if atype == 'text':
                 painter.setPen(QPen(color, 1))
-                painter.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+                painter.setFont(QFont("SimSun", 14, QFont.Bold))
+                bg_color = data.get('bg_color')
+                bg_opacity = data.get('bg_opacity', 140)
+                fm = painter.fontMetrics()
+                text_rect = fm.boundingRect(data['text'])
+                bg_rect = QRect(data['x'] - 2, data['y'] - text_rect.height() - 2,
+                                text_rect.width() + 4, text_rect.height() + 4)
+                if bg_color:
+                    painter.fillRect(bg_rect, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), bg_opacity))
+                else:
+                    painter.fillRect(bg_rect, QColor(0, 0, 0, bg_opacity))
+                painter.setPen(QPen(color, 1))
                 painter.drawText(data['x'], data['y'], data['text'])
                 painter.setPen(pen)
             elif atype == 'arrow':
@@ -1636,15 +2368,114 @@ class _EditorCanvas(QWidget):
                 painter.setBrush(Qt.NoBrush)
                 dist = data.get('distance', '')
                 if dist:
-                    painter.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+                    painter.setFont(QFont("SimSun", 11, QFont.Bold))
                     mx = (data['x1'] + data['x2']) / 2
                     my = (data['y1'] + data['y2']) / 2 - 8
                     painter.drawText(int(mx), int(my), dist)
+
+            if rotation != 0:
+                painter.restore()
 
         painter.end()
         base, ext = os.path.splitext(path)
         save_path = base + '_annotated' + ext
         result.save(save_path)
+
+
+# ── 内联图片控件（支持悬停缩放与双击浏览） ─────────────────
+class _ImageLabel(QWidget):
+    """内联图片控件：悬停时滚轮缩放，双击打开 ImageViewerDialog"""
+    double_clicked = pyqtSignal(int, str)  # img_id, img_path
+
+    def __init__(self, pixmap, img_id=0, img_path='', max_width=400, parent=None):
+        super().__init__(parent)
+        self._pixmap = pixmap
+        self.img_id = img_id
+        self.img_path = img_path
+        self._max_width = max_width
+        self._scale = 1.0
+        self._hover = False
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setSingleShot(True)
+        self._anim_timer.timeout.connect(self._animate_zoom)
+        self._target_scale = 1.0
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._update_size()
+
+    def _update_size(self):
+        if self._pixmap.isNull():
+            self.setFixedSize(0, 0)
+            return
+        w = min(self._pixmap.width(), self._max_width)
+        ratio = w / self._pixmap.width()
+        h = int(self._pixmap.height() * ratio * self._scale)
+        w = int(w * self._scale)
+        self.setFixedSize(w, h)
+        self.update()
+
+    def paintEvent(self, event):
+        if self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        w = min(self._pixmap.width(), self._max_width)
+        scaled = self._pixmap.scaled(w, int(w * self._pixmap.height() / self._pixmap.width()),
+                                      Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if self._scale != 1.0:
+            scaled = scaled.scaled(int(scaled.width() * self._scale),
+                                   int(scaled.height() * self._scale),
+                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        # 悬停时绘制蓝色边框
+        if self._hover:
+            pen = QPen(QColor(63, 123, 247, 160), 2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
+        painter.end()
+
+    def wheelEvent(self, event):
+        if not self._hover:
+            event.ignore()
+            return
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self._target_scale = min(self._scale * 1.1, 3.0)
+        else:
+            self._target_scale = max(self._scale / 1.1, 1.0)
+        self._animate_zoom()
+        event.accept()
+
+    def _animate_zoom(self):
+        step = 0.05 if self._target_scale > self._scale else -0.05
+        new_scale = self._scale + step
+        if (step > 0 and new_scale >= self._target_scale) or \
+           (step < 0 and new_scale <= self._target_scale):
+            self._scale = self._target_scale
+        else:
+            self._scale = new_scale
+            self._anim_timer.start(16)
+        self._update_size()
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = False
+        if self._scale > 1.0:
+            self._target_scale = 1.0
+            self._animate_zoom()
+        else:
+            self.update()
+        super().leaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        self.double_clicked.emit(self.img_id, self.img_path)
 
 
 # ── 详情面板 ──────────────────────────────────────────────
@@ -1684,22 +2515,24 @@ class DetailPanel(QWidget):
         line.setStyleSheet("background-color: #2a2a30; max-height: 1px;")
         layout.addWidget(line)
 
-        # 内容区
+        # 内容区：可滚动页面容器
+        self.page_scroll = QScrollArea()
+        self.page_scroll.setWidgetResizable(True)
+        self.page_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.page_container = QWidget()
+        self.page_layout = QVBoxLayout(self.page_container)
+        self.page_layout.setContentsMargins(16, 16, 16, 16)
+        self.page_layout.setSpacing(8)
+        self.page_layout.addStretch()
+        self.page_scroll.setWidget(self.page_container)
+        self.page_scroll.hide()
+        layout.addWidget(self.page_scroll)
+
+        # 文本浏览器（非影像标签页使用）
         self.content_browser = QTextBrowser()
         self.content_browser.setOpenExternalLinks(True)
         self.content_browser.setStyleSheet("border: none; padding: 16px;")
         layout.addWidget(self.content_browser)
-
-        # 图片缩略图列表（仅影像所见标签页显示）
-        self.thumb_list = QListWidget()
-        self.thumb_list.setViewMode(QListWidget.IconMode)
-        self.thumb_list.setIconSize(QSize(200, 150))
-        self.thumb_list.setSpacing(8)
-        self.thumb_list.setResizeMode(QListWidget.Adjust)
-        self.thumb_list.setMovement(QListWidget.Static)
-        self.thumb_list.itemDoubleClicked.connect(self._on_thumb_double_clicked)
-        self.thumb_list.hide()
-        layout.addWidget(self.thumb_list)
 
         # 影像操作栏（仅影像所见标签页显示）
         self.img_action_bar = QWidget()
@@ -1721,16 +2554,20 @@ class DetailPanel(QWidget):
         self.img_action_bar.hide()
         layout.addWidget(self.img_action_bar)
 
+        # 存储当前影像页面的图片列表（用于双击浏览）
+        self._current_image_list = []
+
     def switch_tab(self, idx):
         self.current_tab = idx
         for i, btn in enumerate(self.tab_buttons):
             btn.setProperty('active', i == idx)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
-        # 影像操作栏和缩略图列表仅在影像所见标签页显示
+        # 影像操作栏和页面滚动区仅在影像所见标签页显示
         is_imaging = (idx == 2)
         self.img_action_bar.setVisible(is_imaging)
-        self.thumb_list.setVisible(is_imaging)
+        self.page_scroll.setVisible(is_imaging)
+        self.content_browser.setVisible(not is_imaging)
         self._refresh_content()
 
     def load_disease(self, disease_id, db_path):
@@ -1839,10 +2676,20 @@ class DetailPanel(QWidget):
         self.content_browser.setHtml(html)
 
     def _show_imaging_tab(self, d):
+        # 清除页面容器中的旧内容
+        while self.page_layout.count():
+            item = self.page_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._current_image_list = []
+
         if not self.current_disease_id:
-            self.content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
-            self.thumb_list.clear()
+            lbl = QLabel('请先选择疾病')
+            lbl.setStyleSheet("color: #666; padding: 16px;")
+            self.page_layout.insertWidget(self.page_layout.count() - 1, lbl)
             return
+
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         c.execute("SELECT id, filename, caption, media_type FROM images WHERE disease_id=?",
@@ -1850,46 +2697,105 @@ class DetailPanel(QWidget):
         rows = c.fetchall()
         conn.close()
 
-        html = f'{self._html_heading("影像所见")}'
-        if d.get('xray_finding'):
-            html += f'{self._html_heading("X线", 3)}{self._html_body(d["xray_finding"])}'
-        if d.get('ct_finding'):
-            html += f'{self._html_heading("CT", 3)}{self._html_body(d["ct_finding"])}'
-        if d.get('mri_finding'):
-            html += f'{self._html_heading("MRI", 3)}{self._html_body(d["mri_finding"])}'
-        if d.get('pet_finding'):
-            html += f'{self._html_heading("PET", 3)}{self._html_body(d["pet_finding"])}'
-        html += f'<p style="color:#888890; margin-top:16px;">共 {len(rows)} 张影像（双击图片进入编辑）</p>'
-        self.content_browser.setHtml(html)
-
-        # 填充缩略图列表
-        self.thumb_list.clear()
+        # 收集所有图片路径（用于双击浏览）
         for img_id, filename, caption, media_type in rows:
             img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
-            if os.path.exists(img_path):
-                pixmap = QPixmap(img_path)
-                icon = QIcon(pixmap.scaled(200, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                item = QListWidgetItem(icon, caption or filename or '')
-                item.setData(Qt.UserRole, img_id)
-                item.setData(Qt.UserRole + 1, img_path)
-                self.thumb_list.addItem(item)
+            if img_path and os.path.exists(img_path):
+                self._current_image_list.append((img_id, img_path))
 
-    def _on_thumb_double_clicked(self, item):
-        # 收集当前所有图片路径
-        image_paths = []
+        # 辅助方法：添加标题
+        def add_heading(text, level=2):
+            colors = {1: '#3f7bf7', 2: '#5a91ff', 3: '#7aadff'}
+            color = colors.get(level, '#5a91ff')
+            sizes = {1: '20px', 2: '16px', 3: '14px'}
+            size = sizes.get(level, '14px')
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color: {color}; font-size: {size}; font-weight: bold; margin-top: 12px; margin-bottom: 4px;")
+            self.page_layout.insertWidget(self.page_layout.count() - 1, lbl)
+
+        # 辅助方法：添加正文
+        def add_body(text):
+            if not text:
+                return
+            lbl = QLabel(text)
+            lbl.setWordWrap(True)
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lbl.setStyleSheet("color: #c8c8cc; line-height: 1.8; font-size: 13px; margin-bottom: 4px;")
+            self.page_layout.insertWidget(self.page_layout.count() - 1, lbl)
+
+        # 辅助方法：添加内联图片
+        def add_image(img_id, filename, caption):
+            img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
+            if not os.path.exists(img_path):
+                return
+            pixmap = QPixmap(img_path)
+            if pixmap.isNull():
+                return
+            img_label = _ImageLabel(pixmap, img_id=img_id, img_path=img_path, max_width=400)
+            img_label.double_clicked.connect(self._on_image_double_clicked)
+            self.page_layout.insertWidget(self.page_layout.count() - 1, img_label)
+            # 图片说明
+            if caption:
+                cap_lbl = QLabel(caption)
+                cap_lbl.setStyleSheet("color: #888890; font-size: 11px; margin-bottom: 8px;")
+                cap_lbl.setAlignment(Qt.AlignCenter)
+                self.page_layout.insertWidget(self.page_layout.count() - 1, cap_lbl)
+
+        # 渲染页面内容
+        add_heading("影像所见")
+
+        if d.get('xray_finding'):
+            add_heading("X线", 3)
+            add_body(d['xray_finding'])
+            for img_id, filename, caption, mt in rows:
+                if mt == 'xray':
+                    add_image(img_id, filename, caption)
+
+        if d.get('ct_finding'):
+            add_heading("CT", 3)
+            add_body(d['ct_finding'])
+            for img_id, filename, caption, mt in rows:
+                if mt == 'ct':
+                    add_image(img_id, filename, caption)
+
+        if d.get('mri_finding'):
+            add_heading("MRI", 3)
+            add_body(d['mri_finding'])
+            for img_id, filename, caption, mt in rows:
+                if mt == 'mri':
+                    add_image(img_id, filename, caption)
+
+        if d.get('pet_finding'):
+            add_heading("PET", 3)
+            add_body(d['pet_finding'])
+            for img_id, filename, caption, mt in rows:
+                if mt == 'pet':
+                    add_image(img_id, filename, caption)
+
+        # 未分类的图片（media_type 为 'image' 或其他）
+        uncategorized = [(iid, fn, cap, mt) for iid, fn, cap, mt in rows
+                         if mt not in ('xray', 'ct', 'mri', 'pet')]
+        if uncategorized:
+            add_heading("影像资料", 3)
+            for img_id, filename, caption, mt in uncategorized:
+                add_image(img_id, filename, caption)
+
+        # 底部提示
+        tip = QLabel(f'共 {len(rows)} 张影像（悬停滚轮缩放，双击图片进入浏览）')
+        tip.setStyleSheet("color: #888890; font-size: 11px; margin-top: 12px;")
+        self.page_layout.insertWidget(self.page_layout.count() - 1, tip)
+
+    def _on_image_double_clicked(self, img_id, img_path):
+        """内联图片双击：打开 ImageViewerDialog"""
+        if not self._current_image_list:
+            return
         current_idx = 0
-        clicked_img_id = item.data(Qt.UserRole)
-        for i in range(self.thumb_list.count()):
-            it = self.thumb_list.item(i)
-            img_id = it.data(Qt.UserRole)
-            img_path = it.data(Qt.UserRole + 1)
-            if img_id is not None and img_path and os.path.exists(img_path):
-                image_paths.append((img_id, img_path))
-                if img_id == clicked_img_id:
-                    current_idx = len(image_paths) - 1
-        if image_paths:
-            viewer = ImageViewerDialog(image_paths, current_idx, self)
-            viewer.exec_()
+        for i, (iid, ipath) in enumerate(self._current_image_list):
+            if iid == img_id and ipath == img_path:
+                current_idx = i
+                break
+        viewer = ImageViewerDialog(self._current_image_list, current_idx, self)
+        viewer.exec_()
 
     def _show_medical_tab(self):
         if not self.current_disease_id:
