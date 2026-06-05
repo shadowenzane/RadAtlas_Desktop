@@ -3,20 +3,25 @@ import sys
 import json
 import math
 import sqlite3
+
+# 版本信息
+APP_VERSION = 'v1.0.0'
+APP_AUTHOR = '楚雄州人民医院 医学影像中心 张兴文'
 import shutil
 import requests
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QTextBrowser, QSplitter,
+    QLabel, QLineEdit, QPushButton, QTextBrowser, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QTabWidget, QDialog,
     QMessageBox, QStatusBar, QFrame, QGroupBox, QSizePolicy,
     QScrollArea, QComboBox, QFileDialog, QMenu, QMenuBar,
     QAction, QCompleter, QToolBar, QSpinBox, QCheckBox,
     QInputDialog, QSlider, QGridLayout
 )
-from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QPoint, QTimer
-from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QPixmap, QPainter, QPen, QPolygon, QBrush
+from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, QPropertyAnimation, QEasingCurve
+from PyQt5.QtWidgets import QGraphicsOpacityEffect
+from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QTextListFormat, QPixmap, QPainter, QPen, QPolygon, QBrush, QTransform
 
 from models import (
     init_user_db, authenticate_user, init_db, load_data,
@@ -24,7 +29,8 @@ from models import (
     rename_user, admin_change_password,
     hash_password, DATABASE, USER_DB, APP_DIR, copy_public_to_user,
     add_disease, update_disease, delete_disease,
-    add_image, delete_image, get_disease, search_diseases
+    add_image, delete_image, get_disease, search_diseases,
+    generate_key, encrypt_image, decrypt_image, get_image_by_id, update_image_encryption
 )
 from ai_helper import load_config, save_config, call_ai, PROVIDERS
 
@@ -36,6 +42,7 @@ THEMES = {
         'accent': '#3f7bf7', 'accent_hover': '#5a91ff', 'accent_press': '#2a5fd6',
         'border': '#2a2a30', 'danger': '#e64a3a', 'muted': '#3a3a40',
         'select_bg': '#2a3a5a', 'select_fg': '#5a91ff',
+        'title_bg': '#1a1a2e', 'title_fg': '#5a91ff',
     },
     '极光绿': {
         'bg': '#0d1b12', 'bg2': '#122018', 'bg3': '#162a1e',
@@ -43,6 +50,7 @@ THEMES = {
         'accent': '#2ecc71', 'accent_hover': '#4ade80', 'accent_press': '#22a85a',
         'border': '#1e3a24', 'danger': '#e74c3c', 'muted': '#1e3a24',
         'select_bg': '#1a4a2a', 'select_fg': '#4ade80',
+        'title_bg': '#0d1b12', 'title_fg': '#4ade80',
     },
     '暮光紫': {
         'bg': '#161220', 'bg2': '#1c1830', 'bg3': '#221e38',
@@ -50,6 +58,7 @@ THEMES = {
         'accent': '#9b59b6', 'accent_hover': '#b370cf', 'accent_press': '#7d3f98',
         'border': '#2e2848', 'danger': '#e74c3c', 'muted': '#2e2848',
         'select_bg': '#3a2860', 'select_fg': '#b370cf',
+        'title_bg': '#1c1830', 'title_fg': '#b370cf',
     },
     '暖沙': {
         'bg': '#1a1714', 'bg2': '#22201c', 'bg3': '#2a2824',
@@ -57,6 +66,7 @@ THEMES = {
         'accent': '#e67e22', 'accent_hover': '#f0983a', 'accent_press': '#c06610',
         'border': '#3a3630', 'danger': '#e64a3a', 'muted': '#3a3630',
         'select_bg': '#4a3a20', 'select_fg': '#f0983a',
+        'title_bg': '#22201c', 'title_fg': '#f0983a',
     },
     '浅色经典': {
         'bg': '#f5f5f8', 'bg2': '#ffffff', 'bg3': '#eeeef2',
@@ -64,6 +74,39 @@ THEMES = {
         'accent': '#3f7bf7', 'accent_hover': '#5a91ff', 'accent_press': '#2a5fd6',
         'border': '#d0d0d8', 'danger': '#e64a3a', 'muted': '#c0c0c8',
         'select_bg': '#d0e0ff', 'select_fg': '#3f7bf7',
+        'title_bg': '#e8e8f0', 'title_fg': '#3f7bf7',
+    },
+    '赤焰红': {
+        'bg': '#1a1012', 'bg2': '#221418', 'bg3': '#2a1a1e',
+        'fg': '#e8d0d4', 'fg2': '#a88088', 'fg3': '#785060',
+        'accent': '#e74c3c', 'accent_hover': '#f06050', 'accent_press': '#c0392b',
+        'border': '#3a2028', 'danger': '#ff4444', 'muted': '#3a2028',
+        'select_bg': '#4a2028', 'select_fg': '#f06050',
+        'title_bg': '#221418', 'title_fg': '#f06050',
+    },
+    '冰川蓝': {
+        'bg': '#0e1520', 'bg2': '#141e2c', 'bg3': '#1a2838',
+        'fg': '#c8d8e8', 'fg2': '#7898b0', 'fg3': '#507088',
+        'accent': '#3498db', 'accent_hover': '#5dade2', 'accent_press': '#2178b0',
+        'border': '#1e3040', 'danger': '#e74c3c', 'muted': '#1e3040',
+        'select_bg': '#1e3a5a', 'select_fg': '#5dade2',
+        'title_bg': '#141e2c', 'title_fg': '#5dade2',
+    },
+    '樱花粉': {
+        'bg': '#1a1218', 'bg2': '#221820', 'bg3': '#2a1e28',
+        'fg': '#e8d0e0', 'fg2': '#a880a0', 'fg3': '#785070',
+        'accent': '#e84393', 'accent_hover': '#f06aa8', 'accent_press': '#c03078',
+        'border': '#3a2038', 'danger': '#e74c3c', 'muted': '#3a2038',
+        'select_bg': '#4a2040', 'select_fg': '#f06aa8',
+        'title_bg': '#221820', 'title_fg': '#f06aa8',
+    },
+    '琥珀金': {
+        'bg': '#18160e', 'bg2': '#201e14', 'bg3': '#28261a',
+        'fg': '#e8e0c8', 'fg2': '#a89868', 'fg3': '#787048',
+        'accent': '#f1c40f', 'accent_hover': '#f4d03f', 'accent_press': '#d4ac0d',
+        'border': '#3a3620', 'danger': '#e74c3c', 'muted': '#3a3620',
+        'select_bg': '#4a4020', 'select_fg': '#f4d03f',
+        'title_bg': '#201e14', 'title_fg': '#f4d03f',
     },
 }
 
@@ -244,6 +287,30 @@ QSpinBox {{
     border-radius: 4px;
     padding: 4px;
 }}
+QSlider::groove:horizontal {{
+    background-color: {t['border']};
+    height: 6px;
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    background-color: {t['accent']};
+    width: 14px;
+    height: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
+}}
+QSlider::sub-page:horizontal {{
+    background-color: {t['accent']};
+    border-radius: 3px;
+}}
+QToolTip {{
+    background-color: {t['bg3']};
+    color: {t['fg']};
+    border: 1px solid {t['border']};
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+}}
 """
 
 
@@ -251,67 +318,216 @@ QSpinBox {{
 DARK_STYLE = build_stylesheet(THEMES['深蓝暗夜'])
 
 
+class _CustomTitleBar(QWidget):
+    """自定义标题栏，与主题配色一致"""
+    def __init__(self, parent_window, title='', icon_text='RadAtlas'):
+        super().__init__(parent_window)
+        self.parent_window = parent_window
+        self._drag_pos = None
+        self.setFixedHeight(36)
+        self.setObjectName('customTitleBar')
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 6, 0)
+        layout.setSpacing(6)
+
+        # 图标/名称
+        icon_label = QLabel(icon_text)
+        icon_label.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        icon_label.setStyleSheet("background: transparent;")
+        icon_label.setFixedWidth(80)
+        layout.addWidget(icon_label)
+
+        # 标题
+        self.title_label = QLabel(title)
+        self.title_label.setFont(QFont("Microsoft YaHei", 9))
+        self.title_label.setStyleSheet("background: transparent;")
+        layout.addWidget(self.title_label, stretch=1)
+
+        # 最小化按钮
+        btn_min = QPushButton('─')
+        btn_min.setFixedSize(32, 28)
+        btn_min.setFont(QFont("SimSun", 9))
+        btn_min.setObjectName('titleBtn')
+        btn_min.setCursor(Qt.PointingHandCursor)
+        btn_min.clicked.connect(parent_window.showMinimized)
+        layout.addWidget(btn_min)
+
+        # 最大化/还原按钮
+        self.btn_max = QPushButton('□')
+        self.btn_max.setFixedSize(32, 28)
+        self.btn_max.setFont(QFont("SimSun", 9))
+        self.btn_max.setObjectName('titleBtn')
+        self.btn_max.setCursor(Qt.PointingHandCursor)
+        self.btn_max.clicked.connect(self._toggle_maximize)
+        layout.addWidget(self.btn_max)
+
+        # 关闭按钮
+        btn_close = QPushButton('×')
+        btn_close.setFixedSize(32, 28)
+        btn_close.setFont(QFont("SimSun", 12))
+        btn_close.setObjectName('titleCloseBtn')
+        btn_close.setCursor(Qt.PointingHandCursor)
+        btn_close.clicked.connect(parent_window.close)
+        layout.addWidget(btn_close)
+
+    def set_title(self, title):
+        self.title_label.setText(title)
+
+    def _toggle_maximize(self):
+        if self.parent_window.isMaximized():
+            self.parent_window.showNormal()
+            self.btn_max.setText('□')
+        else:
+            self.parent_window.showMaximized()
+            self.btn_max.setText('❐')
+
+    def update_theme(self, t):
+        """根据主题更新标题栏样式"""
+        title_bg = t.get('title_bg', t['bg2'])
+        title_fg = t.get('title_fg', t['accent'])
+        self.setStyleSheet(f"""
+            QWidget#customTitleBar {{
+                background-color: {title_bg};
+                border-bottom: 1px solid {t['border']};
+            }}
+            QLabel {{
+                color: {title_fg};
+                background: transparent;
+            }}
+            QPushButton#titleBtn {{
+                background: transparent;
+                color: {t['fg2']};
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+            }}
+            QPushButton#titleBtn:hover {{
+                background-color: {t['border']};
+                color: {t['fg']};
+            }}
+            QPushButton#titleCloseBtn {{
+                background: transparent;
+                color: {t['fg2']};
+                border: none;
+                border-radius: 4px;
+            }}
+            QPushButton#titleCloseBtn:hover {{
+                background-color: #e64a3a;
+                color: #ffffff;
+            }}
+        """)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPos() - self.parent_window.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.LeftButton:
+            if self.parent_window.isMaximized():
+                self.parent_window.showNormal()
+                self.btn_max.setText('□')
+                # 按比例还原窗口位置
+                screen = QApplication.desktop().availableGeometry()
+                ratio = self._drag_pos.x() / screen.width()
+                self.parent_window.move(event.globalPos() - self._drag_pos)
+                self._drag_pos = event.pos()  # 重新计算
+            self.parent_window.move(event.globalPos() - self._drag_pos)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, event):
+        self._toggle_maximize()
+
+
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.user_info = None
-        self.setWindowTitle('RadAtlas - 登录')
-        self.setFixedSize(400, 380)
+        self.user_password = None
+        self.setWindowTitle(f'RadAtlas {APP_VERSION} - 登录')
+        self.setFixedSize(400, 420)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
 
+        # 登录窗口淡入动画
+        self._login_opacity = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._login_opacity)
+        self._login_opacity.setOpacity(0)
+        self._login_anim = QPropertyAnimation(self._login_opacity, b"opacity")
+        self._login_anim.setDuration(400)
+        self._login_anim.setStartValue(0.0)
+        self._login_anim.setEndValue(1.0)
+        self._login_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        QTimer.singleShot(100, self._login_anim.start)
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 50, 40, 30)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, f'RadAtlas {APP_VERSION} - 登录')
+        self.title_bar.update_theme(THEMES['深蓝暗夜'])
+        layout.addWidget(self.title_bar)
+
+        # 内容区域
+        content = QVBoxLayout()
+        content.setContentsMargins(40, 30, 40, 20)
+        content.setSpacing(12)
 
         title = QLabel('RadAtlas')
         title.setFont(QFont("Microsoft YaHei", 28, QFont.Bold))
         title.setStyleSheet("color: #3f7bf7; background: transparent;")
         title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        content.addWidget(title)
 
         subtitle = QLabel('影像图鉴助手')
         subtitle.setFont(QFont("Microsoft YaHei", 12))
         subtitle.setStyleSheet("color: #666670; background: transparent;")
         subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
+        content.addWidget(subtitle)
 
-        layout.addSpacing(20)
+        content.addSpacing(20)
 
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText('用户名')
         self.username_input.setFixedHeight(44)
-        layout.addWidget(self.username_input)
+        content.addWidget(self.username_input)
 
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText('密码')
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setFixedHeight(44)
         self.password_input.returnPressed.connect(self.do_login)
-        layout.addWidget(self.password_input)
+        content.addWidget(self.password_input)
 
-        layout.addSpacing(8)
+        content.addSpacing(8)
 
         login_btn = QPushButton('登 录')
         login_btn.setFixedHeight(44)
         login_btn.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
         login_btn.clicked.connect(self.do_login)
-        layout.addWidget(login_btn)
+        content.addWidget(login_btn)
 
         hint = QLabel('默认管理员: admin / admin123')
         hint.setStyleSheet("color: #555560; font-size: 11px; background: transparent;")
         hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint)
+        content.addWidget(hint)
 
-        layout.addStretch()
+        content.addStretch()
 
-        close_btn = QPushButton('×')
-        close_btn.setParent(self)
-        close_btn.setGeometry(self.width() - 36, 6, 30, 30)
-        close_btn.setStyleSheet("""
-            QPushButton { background: transparent; color: #666; font-size: 18px; border: none; }
-            QPushButton:hover { color: #fff; background: #e64a3a; border-radius: 4px; }
-        """)
-        close_btn.clicked.connect(self.reject)
+        # 版本信息和制作人
+        version_label = QLabel(f'RadAtlas {APP_VERSION}')
+        version_label.setStyleSheet("color: #555560; font-size: 10px; background: transparent;")
+        version_label.setAlignment(Qt.AlignCenter)
+        content.addWidget(version_label)
+
+        author_label = QLabel(APP_AUTHOR)
+        author_label.setStyleSheet("color: #555560; font-size: 10px; background: transparent;")
+        author_label.setAlignment(Qt.AlignCenter)
+        content.addWidget(author_label)
+
+        layout.addLayout(content)
 
     def do_login(self):
         username = self.username_input.text().strip()
@@ -326,6 +542,7 @@ class LoginDialog(QDialog):
             return
         if user:
             self.user_info = user
+            self.user_password = password
             self.accept()
         else:
             QMessageBox.warning(self, '错误', '用户名或密码错误')
@@ -745,18 +962,36 @@ class EditUserDialog(QDialog):
 class ImageViewerDialog(QDialog):
     """图像浏览窗口：缩放/平移/翻页，双击进入编辑模式"""
 
-    def __init__(self, image_paths, current_index=0, parent=None):
+    def __init__(self, image_paths, current_index=0, parent=None, user_info=None, user_password=None, active_db=None):
         super().__init__(parent)
         self.setWindowTitle('图像浏览')
         self.setMinimumSize(900, 650)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.image_paths = image_paths  # list of (img_id, img_path)
         self.current_index = current_index
         self.scale = 1.0
         self.current_theme = self._detect_theme()
+        self.user_info = user_info
+        self.user_password = user_password
+        self.active_db = active_db
+        # 浏览窗口淡入动画
+        self._viewer_opacity = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._viewer_opacity)
+        self._viewer_opacity.setOpacity(0)
+        self._viewer_anim = QPropertyAnimation(self._viewer_opacity, b"opacity")
+        self._viewer_anim.setDuration(300)
+        self._viewer_anim.setStartValue(0.0)
+        self._viewer_anim.setEndValue(1.0)
+        self._viewer_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        QTimer.singleShot(50, self._viewer_anim.start)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, '图像浏览')
+        layout.addWidget(self.title_bar)
 
         # 顶部工具栏
         top_bar = QHBoxLayout()
@@ -832,7 +1067,7 @@ class ImageViewerDialog(QDialog):
         layout.addLayout(top_bar)
 
         # 画布
-        self.viewer_canvas = _ViewerCanvas(self)
+        self.viewer_canvas = _ViewerCanvas(self, user_info=self.user_info, user_password=self.user_password, active_db=self.active_db)
         layout.addWidget(self.viewer_canvas, stretch=1)
 
         # 底部提示
@@ -883,11 +1118,14 @@ class ImageViewerDialog(QDialog):
         """)
         self.viewer_canvas.bg_color = QColor(245, 245, 248) if is_light else QColor(20, 20, 22)
         self.viewer_canvas.update()
+        # 更新标题栏主题
+        if hasattr(self, 'title_bar'):
+            self.title_bar.update_theme(t)
 
     def _load_current(self):
         if 0 <= self.current_index < len(self.image_paths):
-            _, img_path = self.image_paths[self.current_index]
-            self.viewer_canvas.load_image(img_path)
+            img_id, img_path = self.image_paths[self.current_index]
+            self.viewer_canvas.load_image(img_path, img_id)
             self.page_label.setText(f' {self.current_index + 1} / {len(self.image_paths)} ')
             self.zoom_label.setText('100%')
             self.scale = 1.0
@@ -945,29 +1183,78 @@ class ImageViewerDialog(QDialog):
             _, img_path = self.image_paths[self.current_index]
             if os.path.exists(img_path):
                 editor = ImageEditorDialog(img_path, self)
+                editor.image_updated.connect(self._on_image_updated)
                 editor.exec_()
                 # 编辑后重新加载
                 self.viewer_canvas.load_image(img_path)
+    
+    def _on_image_updated(self, img_path):
+        """图片已更新，重新加载
+        """
+        # 更新当前显示的图片
+        self.viewer_canvas.load_image(img_path)
+        self.viewer_canvas.update()
 
 
 class _ViewerCanvas(QWidget):
     """浏览画布：支持缩放/平移/双击"""
-    def __init__(self, viewer, parent=None):
+    def __init__(self, viewer, parent=None, user_info=None, user_password=None, active_db=None):
         super().__init__(parent)
         self.viewer = viewer
         self.pixmap = None
         self.image_path = None
+        self.image_id = None
         self.scale = 1.0
         self.offset = QPoint(0, 0)
         self.dragging = False
         self.last_pos = None
         self.bg_color = QColor(20, 20, 22)
+        self.user_info = user_info
+        self.user_password = user_password
+        self.active_db = active_db
         self.setMouseTracking(True)
 
-    def load_image(self, path):
+    def load_image(self, path, img_id=None):
         self.image_path = path
+        self.image_id = img_id
         if path and os.path.exists(path):
-            self.pixmap = QPixmap(path)
+            # 检查图片是否加密
+            pixmap = None
+            if self.active_db and img_id:
+                try:
+                    # 从数据库获取加密信息
+                    img_info = get_image_by_id(self.active_db, img_id)
+                    if img_info and img_info.get('encrypted'):
+                        # 检查是否是当前用户的图片
+                        current_user_id = self.user_info.get('id') if self.user_info else None
+                        if img_info.get('owner_id') is not None and img_info.get('owner_id') != current_user_id:
+                            # 不是当前用户的加密图片，不显示
+                            self.pixmap = None
+                            self.update()
+                            return
+                        # 尝试解密
+                        if self.user_password:
+                            try:
+                                key = generate_key(self.user_password)
+                                decrypted_data = decrypt_image(path, key)
+                                if decrypted_data:
+                                    pixmap = QPixmap()
+                                    pixmap.loadFromData(decrypted_data)
+                            except Exception as e:
+                                print(f"解密失败: {e}")
+                except Exception as e:
+                    print(f"加载图片信息失败: {e}")
+            
+            # 如果没有解密成功，尝试直接加载（可能没加密）
+            if pixmap is None or pixmap.isNull():
+                # 优先显示带注释的预览图
+                preview_path = os.path.splitext(path)[0] + '.preview.png'
+                if os.path.exists(preview_path):
+                    pixmap = QPixmap(preview_path)
+                if pixmap is None or pixmap.isNull():
+                    pixmap = QPixmap(path)
+            
+            self.pixmap = pixmap
             # 自动适应
             QTimer.singleShot(50, self.viewer._zoom_fit)
         else:
@@ -1025,15 +1312,7 @@ class _ViewerCanvas(QWidget):
 
 # ── 图片编辑器 ────────────────────────────────────────────
 
-# 预定义颜色
-_ANNOTATION_COLORS = [
-    QColor(255, 80, 80),   # 红
-    QColor(255, 220, 50),  # 黄
-    QColor(80, 220, 80),   # 绿
-    QColor(80, 140, 255),  # 蓝
-    QColor(255, 255, 255), # 白
-    QColor(0, 0, 0),       # 黑
-]
+# 预定义颜色（在 _StyleBar 之前定义）
 
 
 class _ToolButton(QWidget):
@@ -1125,169 +1404,135 @@ class _ToolButton(QWidget):
 
 
 class _FloatingToolbar(QWidget):
-    """浮动可拖拽工具栏"""
+    """浮动可拖拽工具栏 - 左侧工具按钮"""
     tool_changed = pyqtSignal(str)
     color_changed = pyqtSignal(QColor)
     line_width_changed = pyqtSignal(int)
-    action_triggered = pyqtSignal(str)  # undo/clear/save/back/zoom_in/zoom_out/zoom_fit/zoom_orig
+    line_style_changed = pyqtSignal(str)
+    action_triggered = pyqtSignal(str)
 
-    TOOLS = ['select', 'pan', 'text', 'arrow', 'line', 'rect', 'circle', 'measure', 'eraser']
-    LINE_WIDTHS = [1, 3, 5]
+    # 工具分类
+    SELECT_TOOLS = [('select', 'S', '选择'), ('pan', 'V', '移动')]
+    DRAW_TOOLS = [('text', 'T', '文字'), ('arrow', 'A', '箭头'), ('line', 'L', '直线'),
+                  ('rect', 'R', '矩形'), ('circle', 'C', '圆形'), ('measure', 'M', '测量')]
+    EDIT_TOOLS = [('eraser', 'E', '橡皮擦')]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_tool = 'pan'
         self.current_color_idx = 0
         self.current_width_idx = 1
+        self.current_style_idx = 0
         self._drag_pos = None
         self.zoom_pct = 100
 
         self.setFixedWidth(52)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAutoFillBackground(False)
         self.setCursor(Qt.ArrowCursor)
 
-        # 主布局
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(2)
 
-        # 工具按钮
+        # === 选择工具 ===
         self.tool_btns = {}
-        for tid in self.TOOLS:
+        for tid, shortcut, name in self.SELECT_TOOLS:
             btn = _ToolButton(tid, self)
+            btn.setToolTip(f'{name} ({shortcut})')
             btn.clicked.connect(lambda t=tid: self._on_tool(t))
             self.tool_btns[tid] = btn
             layout.addWidget(btn, alignment=Qt.AlignCenter)
 
-        layout.addSpacing(4)
+        self._add_separator(layout)
 
-        # 缩放
-        sep1 = QFrame()
-        sep1.setFrameShape(QFrame.HLine)
-        sep1.setFixedHeight(1)
-        sep1.setStyleSheet("background-color: rgba(255,255,255,30);")
-        layout.addWidget(sep1)
+        # === 绘图工具 ===
+        for tid, shortcut, name in self.DRAW_TOOLS:
+            btn = _ToolButton(tid, self)
+            btn.setToolTip(f'{name} ({shortcut})')
+            btn.clicked.connect(lambda t=tid: self._on_tool(t))
+            self.tool_btns[tid] = btn
+            layout.addWidget(btn, alignment=Qt.AlignCenter)
 
+        self._add_separator(layout)
+
+        # === 编辑工具 ===
+        for tid, shortcut, name in self.EDIT_TOOLS:
+            btn = _ToolButton(tid, self)
+            btn.setToolTip(f'{name} ({shortcut})')
+            btn.clicked.connect(lambda t=tid: self._on_tool(t))
+            self.tool_btns[tid] = btn
+            layout.addWidget(btn, alignment=Qt.AlignCenter)
+
+        self._add_separator(layout)
+
+        # === 缩放 ===
         zoom_row = QHBoxLayout()
         zoom_row.setSpacing(2)
-        btn_zo = QPushButton('-')
-        btn_zo.setFixedSize(20, 20)
-        btn_zo.setFont(QFont("SimSun", 10))
-        btn_zo.clicked.connect(lambda: self.action_triggered.emit('zoom_out'))
+        btn_zo = self._create_action_btn('-', '缩小', 'zoom_out')
         zoom_row.addWidget(btn_zo)
         self.zoom_label = QLabel('100%')
         self.zoom_label.setAlignment(Qt.AlignCenter)
-        self.zoom_label.setFont(QFont("SimSun", 8))
-        self.zoom_label.setStyleSheet("color: #ccc; background: transparent;")
-        self.zoom_label.setFixedWidth(32)
+        self.zoom_label.setFont(QFont("SimSun", 7))
+        self.zoom_label.setStyleSheet("color: #aaa; background: transparent;")
+        self.zoom_label.setFixedWidth(28)
         zoom_row.addWidget(self.zoom_label)
-        btn_zi = QPushButton('+')
-        btn_zi.setFixedSize(20, 20)
-        btn_zi.setFont(QFont("SimSun", 10))
-        btn_zi.clicked.connect(lambda: self.action_triggered.emit('zoom_in'))
+        btn_zi = self._create_action_btn('+', '放大', 'zoom_in')
         zoom_row.addWidget(btn_zi)
         layout.addLayout(zoom_row)
 
-        layout.addSpacing(2)
+        zoom_row2 = QHBoxLayout()
+        zoom_row2.setSpacing(2)
+        btn_fit = self._create_action_btn('⊡', '适应窗口', 'zoom_fit')
+        zoom_row2.addWidget(btn_fit)
+        btn_orig = self._create_action_btn('1:1', '原始大小', 'zoom_orig')
+        zoom_row2.addWidget(btn_orig)
+        layout.addLayout(zoom_row2)
 
-        # 颜色选择
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.HLine)
-        sep2.setFixedHeight(1)
-        sep2.setStyleSheet("background-color: rgba(255,255,255,30);")
-        layout.addWidget(sep2)
+        self._add_separator(layout)
 
-        color_grid = QGridLayout()
-        color_grid.setSpacing(2)
-        self.color_btns = []
-        for i, c in enumerate(_ANNOTATION_COLORS):
-            btn = QPushButton()
-            btn.setFixedSize(14, 14)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(
-                f"background-color: {c.name()}; border: 2px solid "
-                f"{'#3f7bf7' if i == 0 else '#555'}; border-radius: 7px;"
-            )
-            btn.clicked.connect(lambda idx=i: self._on_color(idx))
-            self.color_btns.append(btn)
-            color_grid.addWidget(btn, i // 3, i % 3)
-        layout.addLayout(color_grid)
-
-        layout.addSpacing(2)
-
-        # 线宽
-        sep3 = QFrame()
-        sep3.setFrameShape(QFrame.HLine)
-        sep3.setFixedHeight(1)
-        sep3.setStyleSheet("background-color: rgba(255,255,255,30);")
-        layout.addWidget(sep3)
-
-        width_row = QHBoxLayout()
-        width_row.setSpacing(2)
-        self.width_btns = []
-        for i, w in enumerate(self.LINE_WIDTHS):
-            btn = QPushButton()
-            btn.setFixedSize(14, 14)
-            btn.setCursor(Qt.PointingHandCursor)
-            border = '#3f7bf7' if i == self.current_width_idx else '#555'
-            btn.setStyleSheet(
-                f"background-color: #888; border: 2px solid {border}; border-radius: 3px;"
-            )
-            btn.clicked.connect(lambda idx=i: self._on_width(idx))
-            self.width_btns.append(btn)
-            width_row.addWidget(btn)
-        layout.addLayout(width_row)
-
-        layout.addSpacing(4)
-
-        # 操作按钮
-        sep4 = QFrame()
-        sep4.setFrameShape(QFrame.HLine)
-        sep4.setFixedHeight(1)
-        sep4.setStyleSheet("background-color: rgba(255,255,255,30);")
-        layout.addWidget(sep4)
-
+        # === 操作 ===
         action_icons = [
-            ('undo', '↩'), ('clear', '✕'), ('save', '✓'), ('back', '←'),
+            ('undo', '↩', '撤销 (Ctrl+Z)'), ('clear', '✕', '清空'),
+            ('save', '✓', '保存 (Ctrl+Y)'), ('back', '←', '返回 (Esc)'),
         ]
         self.action_btns = {}
-        for aid, icon in action_icons:
+        for aid, icon, tip in action_icons:
             btn = QPushButton(icon)
-            btn.setFixedSize(36, 24)
+            btn.setFixedSize(36, 22)
             btn.setFont(QFont("SimSun", 10))
             btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda a=aid: self.action_triggered.emit(a))
+            btn.setToolTip(tip)
+            btn.setStyleSheet("background-color: #444; color: #ddd; border: 1px solid #555; border-radius: 4px;")
+            btn.clicked.connect(lambda checked, a=aid: self.action_triggered.emit(a))
             self.action_btns[aid] = btn
             layout.addWidget(btn, alignment=Qt.AlignCenter)
 
         layout.addStretch()
         self.tool_btns['pan'].set_selected(True)
 
+    def _add_separator(self, layout):
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+    def _create_action_btn(self, icon, tooltip, action):
+        btn = QPushButton(icon)
+        btn.setFixedSize(18, 18)
+        btn.setFont(QFont("SimSun", 9))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet("background-color: #555; color: #ddd; border: 1px solid #666; border-radius: 3px;")
+        btn.clicked.connect(lambda: self.action_triggered.emit(action))
+        return btn
+
     def _on_tool(self, tid):
         self.current_tool = tid
         for k, btn in self.tool_btns.items():
             btn.set_selected(k == tid)
         self.tool_changed.emit(tid)
-
-    def _on_color(self, idx):
-        self.current_color_idx = idx
-        for i, btn in enumerate(self.color_btns):
-            border = '#3f7bf7' if i == idx else '#555'
-            c = _ANNOTATION_COLORS[i]
-            btn.setStyleSheet(
-                f"background-color: {c.name()}; border: 2px solid {border}; border-radius: 7px;"
-            )
-        self.color_changed.emit(_ANNOTATION_COLORS[idx])
-
-    def _on_width(self, idx):
-        self.current_width_idx = idx
-        for i, btn in enumerate(self.width_btns):
-            border = '#3f7bf7' if i == idx else '#555'
-            btn.setStyleSheet(
-                f"background-color: #888; border: 2px solid {border}; border-radius: 3px;"
-            )
-        self.line_width_changed.emit(self.LINE_WIDTHS[idx])
 
     def set_zoom_pct(self, pct):
         self.zoom_pct = pct
@@ -1297,14 +1542,184 @@ class _FloatingToolbar(QWidget):
         return _ANNOTATION_COLORS[self.current_color_idx]
 
     def get_line_width(self):
-        return self.LINE_WIDTHS[self.current_width_idx]
+        return _ANNOTATION_WIDTHS[self.current_width_idx]
+
+    def get_line_style(self):
+        return _ANNOTATION_STYLES[self.current_style_idx][0]
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setBrush(QColor(30, 30, 35, 210))
         painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(self.rect(), 10, 10)
+        painter.drawRoundedRect(self.rect(), 8, 8)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.LeftButton:
+            delta = event.pos() - self._drag_pos
+            self.move(self.pos() + delta)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+
+# 默认注释颜色、线宽、线型
+_ANNOTATION_COLORS = [
+    QColor(255, 80, 80), QColor(80, 200, 80), QColor(80, 140, 255),
+    QColor(255, 200, 50), QColor(200, 80, 255), QColor(255, 150, 50),
+]
+_ANNOTATION_WIDTHS = [1, 2, 3, 5, 8, 10]
+_ANNOTATION_STYLES = [('solid', '实线'), ('dashed', '虚线'), ('dotted', '点线'), ('wavy', '波浪')]
+
+
+class _StyleBar(QWidget):
+    """顶部样式栏 - 颜色、线宽、线型选择"""
+    color_changed = pyqtSignal(QColor)
+    line_width_changed = pyqtSignal(int)
+    line_style_changed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_color_idx = 0
+        self.current_width_idx = 1
+        self.current_style_idx = 0
+        self._drag_pos = None
+
+        self.setFixedHeight(36)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAutoFillBackground(False)
+        self.setCursor(Qt.ArrowCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        # 颜色
+        cl = QLabel('颜色')
+        cl.setFont(QFont("SimSun", 8))
+        cl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(cl)
+
+        self.color_btns = []
+        for i, c in enumerate(_ANNOTATION_COLORS):
+            btn = QPushButton()
+            btn.setFixedSize(18, 18)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(c.name())
+            border = '#3f7bf7' if i == 0 else '#555'
+            btn.setStyleSheet(
+                f"background-color: {c.name()}; border: 2px solid {border}; border-radius: 9px;"
+            )
+            btn.clicked.connect(lambda checked, idx=i: self._on_color(idx))
+            self.color_btns.append(btn)
+            layout.addWidget(btn)
+
+        # 分隔
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.VLine)
+        sep1.setFixedWidth(1)
+        sep1.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep1)
+
+        # 线宽
+        wl = QLabel('线宽')
+        wl.setFont(QFont("SimSun", 8))
+        wl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(wl)
+
+        self.width_btns = []
+        for i, w in enumerate(_ANNOTATION_WIDTHS):
+            btn = QPushButton(str(w))
+            btn.setFixedSize(20, 20)
+            btn.setFont(QFont("SimSun", 7))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(f'{w}px')
+            border = '#3f7bf7' if i == self.current_width_idx else '#555'
+            btn.setStyleSheet(
+                f"background-color: #555; border: 2px solid {border}; border-radius: 4px; color: #fff;"
+            )
+            btn.clicked.connect(lambda checked, idx=i: self._on_width(idx))
+            self.width_btns.append(btn)
+            layout.addWidget(btn)
+
+        # 分隔
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
+        sep2.setFixedWidth(1)
+        sep2.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep2)
+
+        # 线型
+        sl = QLabel('线型')
+        sl.setFont(QFont("SimSun", 8))
+        sl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(sl)
+
+        self.style_btns = []
+        for i, (style_id, style_text) in enumerate(_ANNOTATION_STYLES):
+            btn = QPushButton(style_text)
+            btn.setFixedSize(32, 20)
+            btn.setFont(QFont("SimSun", 7))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(style_text)
+            border = '#3f7bf7' if i == self.current_style_idx else '#555'
+            btn.setStyleSheet(
+                f"background-color: #555; border: 2px solid {border}; border-radius: 4px; color: #fff;"
+            )
+            btn.clicked.connect(lambda checked, idx=i: self._on_style(idx))
+            self.style_btns.append(btn)
+            layout.addWidget(btn)
+
+        layout.addStretch()
+
+    def _on_color(self, idx):
+        self.current_color_idx = idx
+        for i, btn in enumerate(self.color_btns):
+            border = '#3f7bf7' if i == idx else '#555'
+            c = _ANNOTATION_COLORS[i]
+            btn.setStyleSheet(
+                f"background-color: {c.name()}; border: 2px solid {border}; border-radius: 9px;"
+            )
+        self.color_changed.emit(_ANNOTATION_COLORS[idx])
+
+    def _on_width(self, idx):
+        self.current_width_idx = idx
+        for i, btn in enumerate(self.width_btns):
+            border = '#3f7bf7' if i == idx else '#555'
+            btn.setStyleSheet(
+                f"background-color: #555; border: 2px solid {border}; border-radius: 4px; color: #fff;"
+            )
+        self.line_width_changed.emit(_ANNOTATION_WIDTHS[idx])
+
+    def _on_style(self, idx):
+        self.current_style_idx = idx
+        for i, btn in enumerate(self.style_btns):
+            border = '#3f7bf7' if i == idx else '#555'
+            btn.setStyleSheet(
+                f"background-color: #555; border: 2px solid {border}; border-radius: 4px; color: #fff;"
+            )
+        self.line_style_changed.emit(_ANNOTATION_STYLES[idx][0])
+
+    def get_color(self):
+        return _ANNOTATION_COLORS[self.current_color_idx]
+
+    def get_line_width(self):
+        return _ANNOTATION_WIDTHS[self.current_width_idx]
+
+    def get_line_style(self):
+        return _ANNOTATION_STYLES[self.current_style_idx][0]
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(30, 30, 35, 210))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self.rect(), 6, 6)
         painter.end()
 
     def mousePressEvent(self, event):
@@ -1327,64 +1742,86 @@ class _PropertyPanel(QWidget):
     opacity_changed = pyqtSignal(int)
     rotation_changed = pyqtSignal(float)
     delete_requested = pyqtSignal()
+    line_style_changed = pyqtSignal(str)
+    width_changed = pyqtSignal(int)
+    height_changed = pyqtSignal(int)
+    size_changed = pyqtSignal(int, int)  # width, height
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(140)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
+        self.setFixedWidth(150)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAutoFillBackground(False)
         self.hide()
+        self.current_color = None
+        self.current_bg_color = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
-        title = QLabel('属性')
+        title = QLabel('属性面板')
         title.setFont(QFont("SimSun", 9, QFont.Bold))
         title.setStyleSheet("color: #ccc; background: transparent;")
         layout.addWidget(title)
 
+        # 分割线
+        sep0 = QFrame()
+        sep0.setFrameShape(QFrame.HLine)
+        sep0.setFixedHeight(1)
+        sep0.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep0)
+
         # 颜色
-        cl = QLabel('颜色')
+        cl = QLabel('线条颜色')
         cl.setFont(QFont("SimSun", 8))
         cl.setStyleSheet("color: #aaa; background: transparent;")
         layout.addWidget(cl)
         color_row = QHBoxLayout()
-        color_row.setSpacing(2)
+        color_row.setSpacing(3)
         self.color_btns = []
         for i, c in enumerate(_ANNOTATION_COLORS):
             btn = QPushButton()
-            btn.setFixedSize(14, 14)
+            btn.setFixedSize(16, 16)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(f"background-color: {c.name()}; border: 1px solid #555; border-radius: 7px;")
-            btn.clicked.connect(lambda idx=i: self.color_changed.emit(_ANNOTATION_COLORS[idx]))
+            btn.setToolTip(c.name())
+            btn.setStyleSheet(
+                f"background-color: {c.name()}; border: 2px solid #555; border-radius: 8px;"
+            )
+            btn.clicked.connect(lambda checked, idx=i: self._on_color_click(idx))
             self.color_btns.append(btn)
             color_row.addWidget(btn)
         layout.addLayout(color_row)
 
         # 背景颜色
-        bgl = QLabel('背景色')
+        bgl = QLabel('填充颜色')
         bgl.setFont(QFont("SimSun", 8))
         bgl.setStyleSheet("color: #aaa; background: transparent;")
         layout.addWidget(bgl)
         bg_row = QHBoxLayout()
-        bg_row.setSpacing(2)
+        bg_row.setSpacing(3)
         self.bg_btns = []
         for i, c in enumerate(_ANNOTATION_COLORS):
             btn = QPushButton()
-            btn.setFixedSize(14, 14)
+            btn.setFixedSize(16, 16)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(f"background-color: {c.name()}; border: 1px solid #555; border-radius: 7px;")
-            btn.clicked.connect(lambda idx=i: self.bg_color_changed.emit(_ANNOTATION_COLORS[idx]))
+            btn.setToolTip(c.name())
+            btn.setStyleSheet(
+                f"background-color: {c.name()}; border: 2px solid #555; border-radius: 8px;"
+            )
+            btn.clicked.connect(lambda checked, idx=i: self._on_bg_color_click(idx))
             self.bg_btns.append(btn)
             bg_row.addWidget(btn)
         # 无背景色按钮
         btn_none = QPushButton('无')
-        btn_none.setFixedSize(14, 14)
+        btn_none.setFixedSize(16, 16)
         btn_none.setFont(QFont("SimSun", 7))
         btn_none.setCursor(Qt.PointingHandCursor)
-        btn_none.setStyleSheet("background-color: transparent; border: 1px solid #555; border-radius: 7px; color: #aaa;")
-        btn_none.clicked.connect(lambda: self.bg_color_changed.emit(None))
+        btn_none.setToolTip('无背景')
+        btn_none.setStyleSheet(
+            "background-color: transparent; border: 2px solid #555; border-radius: 8px; color: #aaa;"
+        )
+        btn_none.clicked.connect(lambda: self._on_bg_color_none())
         bg_row.addWidget(btn_none)
         layout.addLayout(bg_row)
 
@@ -1396,11 +1833,25 @@ class _PropertyPanel(QWidget):
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(55)
+        self.opacity_slider.setToolTip('调整透明度')
+        self.opacity_slider.setFixedWidth(130)
         self.opacity_slider.valueChanged.connect(lambda v: self.opacity_changed.emit(v))
         layout.addWidget(self.opacity_slider)
+        self.opacity_label = QLabel('55%')
+        self.opacity_label.setFont(QFont("SimSun", 7))
+        self.opacity_label.setStyleSheet("color: #888; background: transparent;")
+        self.opacity_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.opacity_label)
+
+        # 分割线
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.HLine)
+        sep1.setFixedHeight(1)
+        sep1.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep1)
 
         # 旋转
-        rl = QLabel('旋转')
+        rl = QLabel('旋转角度')
         rl.setFont(QFont("SimSun", 8))
         rl.setStyleSheet("color: #aaa; background: transparent;")
         layout.addWidget(rl)
@@ -1409,25 +1860,182 @@ class _PropertyPanel(QWidget):
         self.rotation_input.setValue(0)
         self.rotation_input.setFont(QFont("SimSun", 9))
         self.rotation_input.setSuffix('°')
+        self.rotation_input.setToolTip('旋转角度')
+        self.rotation_input.setFixedWidth(130)
         self.rotation_input.valueChanged.connect(lambda v: self.rotation_changed.emit(float(v)))
         layout.addWidget(self.rotation_input)
 
+        # 线型
+        ll = QLabel('线条样式')
+        ll.setFont(QFont("SimSun", 8))
+        ll.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(ll)
+        self.line_style_combo = QComboBox()
+        self.line_style_combo.setFont(QFont("SimSun", 9))
+        self.line_style_combo.addItems(['实线', '虚线', '点线', '波浪线'])
+        self.line_style_combo.setToolTip('选择线型')
+        self.line_style_combo.setFixedWidth(130)
+        self.line_style_combo.currentIndexChanged.connect(self._on_line_style)
+        layout.addWidget(self.line_style_combo)
+
+        # 线宽
+        wl = QLabel('线宽(px)')
+        wl.setFont(QFont("SimSun", 8))
+        wl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(wl)
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(1, 20)
+        self.width_spin.setValue(2)
+        self.width_spin.setFont(QFont("SimSun", 9))
+        self.width_spin.setSuffix('px')
+        self.width_spin.setToolTip('线宽像素')
+        self.width_spin.setFixedWidth(130)
+        self.width_spin.valueChanged.connect(lambda v: self.width_changed.emit(v))
+        layout.addWidget(self.width_spin)
+
+        # 分割线
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep2)
+
+        # 像素尺寸（仅对矩形和圆形有效）
+        sl = QLabel('尺寸(px)')
+        sl.setFont(QFont("SimSun", 8))
+        sl.setStyleSheet("color: #aaa; background: transparent;")
+        layout.addWidget(sl)
+        size_row = QHBoxLayout()
+        size_row.setSpacing(4)
+
+        self.size_w_spin = QSpinBox()
+        self.size_w_spin.setRange(5, 500)
+        self.size_w_spin.setValue(50)
+        self.size_w_spin.setFont(QFont("SimSun", 8))
+        self.size_w_spin.setSuffix('w')
+        self.size_w_spin.setToolTip('宽度')
+        self.size_w_spin.setFixedWidth(60)
+        size_row.addWidget(self.size_w_spin)
+
+        size_row.addWidget(QLabel('×'))
+
+        self.size_h_spin = QSpinBox()
+        self.size_h_spin.setRange(5, 500)
+        self.size_h_spin.setValue(50)
+        self.size_h_spin.setFont(QFont("SimSun", 8))
+        self.size_h_spin.setSuffix('h')
+        self.size_h_spin.setToolTip('高度')
+        self.size_h_spin.setFixedWidth(60)
+        size_row.addWidget(self.size_h_spin)
+
+        self.size_w_spin.valueChanged.connect(self._on_size_change)
+        self.size_h_spin.valueChanged.connect(self._on_size_change)
+        layout.addLayout(size_row)
+
+        # 分割线
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.HLine)
+        sep3.setFixedHeight(1)
+        sep3.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep3)
+
         # 删除
-        del_btn = QPushButton('删除')
+        del_btn = QPushButton('删除元件')
         del_btn.setFont(QFont("SimSun", 9))
         del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.setStyleSheet("background-color: #d9534f; color: white; border: none; border-radius: 4px; padding: 4px;")
         del_btn.clicked.connect(self.delete_requested.emit)
         layout.addWidget(del_btn)
+
+        # 更新透明度标签
+        self.opacity_slider.valueChanged.connect(lambda v: self.opacity_label.setText(f'{v}%'))
+
+    def _on_color_click(self, idx):
+        self.current_color = _ANNOTATION_COLORS[idx]
+        self._update_color_btn_states()
+        self.color_changed.emit(_ANNOTATION_COLORS[idx])
+
+    def _on_bg_color_click(self, idx):
+        self.current_bg_color = _ANNOTATION_COLORS[idx]
+        self._update_bg_color_btn_states()
+        self.bg_color_changed.emit(_ANNOTATION_COLORS[idx])
+
+    def _on_bg_color_none(self):
+        self.current_bg_color = None
+        self._update_bg_color_btn_states()
+        self.bg_color_changed.emit(None)
+
+    def _update_color_btn_states(self):
+        for i, btn in enumerate(self.color_btns):
+            color = _ANNOTATION_COLORS[i]
+            border = '#3f7bf7' if self.current_color == color else '#555'
+            btn.setStyleSheet(
+                f"background-color: {color.name()}; border: 2px solid {border}; border-radius: 8px;"
+            )
+
+    def _update_bg_color_btn_states(self):
+        for i, btn in enumerate(self.bg_btns):
+            color = _ANNOTATION_COLORS[i]
+            border = '#3f7bf7' if self.current_bg_color == color else '#555'
+            btn.setStyleSheet(
+                f"background-color: {color.name()}; border: 2px solid {border}; border-radius: 8px;"
+            )
+
+    def _on_line_style(self, idx):
+        styles = ['solid', 'dashed', 'dotted', 'wavy']
+        if 0 <= idx < len(styles):
+            self.line_style_changed.emit(styles[idx])
+
+    def _on_size_change(self):
+        w = self.size_w_spin.value()
+        h = self.size_h_spin.value()
+        self.size_changed.emit(w, h)
 
     def set_annotation(self, data):
         """根据注释数据更新面板"""
         self.rotation_input.blockSignals(True)
         self.opacity_slider.blockSignals(True)
+        self.width_spin.blockSignals(True)
+        self.line_style_combo.blockSignals(True)
+        self.size_w_spin.blockSignals(True)
+        self.size_h_spin.blockSignals(True)
+
+        # 更新颜色状态
+        self.current_color = data.get('color')
+        self._update_color_btn_states()
+
+        # 更新背景颜色状态
+        self.current_bg_color = data.get('bg_color')
+        self._update_bg_color_btn_states()
+
+        # 更新数值控件
         self.rotation_input.setValue(int(data.get('rotation', 0)))
         bg_opacity = data.get('bg_opacity', 140)
-        self.opacity_slider.setValue(int(bg_opacity * 100 / 255))
+        opacity_val = int(bg_opacity * 100 / 255)
+        self.opacity_slider.setValue(opacity_val)
+        self.opacity_label.setText(f'{opacity_val}%')
+        self.width_spin.setValue(int(data.get('width', 2)))
+
+        line_style = data.get('line_style', 'solid')
+        style_idx = {'solid': 0, 'dashed': 1, 'dotted': 2, 'wavy': 3}.get(line_style, 0)
+        self.line_style_combo.setCurrentIndex(style_idx)
+
+        # 更新尺寸（仅对矩形和圆形）
+        if 'w' in data and 'h' in data:
+            self.size_w_spin.setValue(max(5, int(data['w'])))
+            self.size_h_spin.setValue(max(5, int(data['h'])))
+            self.size_w_spin.setEnabled(True)
+            self.size_h_spin.setEnabled(True)
+        else:
+            self.size_w_spin.setEnabled(False)
+            self.size_h_spin.setEnabled(False)
+
         self.rotation_input.blockSignals(False)
         self.opacity_slider.blockSignals(False)
+        self.width_spin.blockSignals(False)
+        self.line_style_combo.blockSignals(False)
+        self.size_w_spin.blockSignals(False)
+        self.size_h_spin.blockSignals(False)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1447,18 +2055,42 @@ class ImageEditorDialog(QDialog):
         Qt.Key_M: 'measure', Qt.Key_E: 'eraser', Qt.Key_S: 'select',
     }
 
+    image_updated = pyqtSignal(str)  # 信号：图片已更新，传递图片路径
+
     def __init__(self, image_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle('图片编辑器')
         self.setMinimumSize(1050, 720)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.image_path = image_path
         self.scale = 1.0
         self.tool = 'pan'
+        self.current_color = _ANNOTATION_COLORS[0]
+        self.current_line_width = 2
+        # 编辑器淡入动画
+        self._editor_opacity = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._editor_opacity)
+        self._editor_opacity.setOpacity(0)
+        self._editor_anim = QPropertyAnimation(self._editor_opacity, b"opacity")
+        self._editor_anim.setDuration(300)
+        self._editor_anim.setStartValue(0.0)
+        self._editor_anim.setEndValue(1.0)
+        self._editor_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        QTimer.singleShot(50, self._editor_anim.start)
+        self.current_line_style = 'solid'
         self.current_theme = self._detect_theme()
+        # 实时保存定时器
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.timeout.connect(self._auto_save)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, '图片编辑器')
+        layout.addWidget(self.title_bar)
 
         # 信息栏
         info_bar = QLabel(f'  {os.path.basename(image_path)}  |  当前工具: 移动  |  Esc返回浏览')
@@ -1470,31 +2102,43 @@ class ImageEditorDialog(QDialog):
 
         # 画布容器（用于叠放浮动工具栏和属性面板）
         self.canvas_container = QWidget()
-        container_layout = QVBoxLayout(self.canvas_container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
+        self.canvas_container.setObjectName('canvasContainer')
 
         self.canvas = _EditorCanvas(self)
         self.canvas.image_path = image_path
         self.canvas.load_image()
-        container_layout.addWidget(self.canvas)
 
-        # 浮动工具栏
+        # 浮动工具栏（左侧，只有工具按钮）
         self.toolbar = _FloatingToolbar(self.canvas_container)
         self.toolbar.move(10, 10)
         self.toolbar.show()
         self.toolbar.tool_changed.connect(self._set_tool)
-        self.toolbar.color_changed.connect(self._on_color_changed)
-        self.toolbar.line_width_changed.connect(self._on_width_changed)
         self.toolbar.action_triggered.connect(self._on_action)
+
+        # 样式栏（顶部，颜色/线宽/线型）
+        self.style_bar = _StyleBar(self.canvas_container)
+        self.style_bar.move(70, 10)
+        self.style_bar.show()
+        self.style_bar.color_changed.connect(self._on_color_changed)
+        self.style_bar.line_width_changed.connect(self._on_width_changed)
+        self.style_bar.line_style_changed.connect(self._on_style_changed)
 
         # 属性面板
         self.prop_panel = _PropertyPanel(self.canvas_container)
-        self.prop_panel.move(70, 10)
+        self.prop_panel.move(70, 52)
         self.prop_panel.color_changed.connect(self._on_prop_color)
         self.prop_panel.bg_color_changed.connect(self._on_prop_bg_color)
         self.prop_panel.opacity_changed.connect(self._on_prop_opacity)
         self.prop_panel.rotation_changed.connect(self._on_prop_rotation)
         self.prop_panel.delete_requested.connect(self._on_prop_delete)
+        self.prop_panel.line_style_changed.connect(self._on_prop_line_style)
+        self.prop_panel.width_changed.connect(self._on_prop_width)
+        self.prop_panel.size_changed.connect(self._on_prop_size)
+
+        # 使用布局管理 canvas，浮动工具栏和属性面板通过 move 定位叠在上面
+        container_layout = QVBoxLayout(self.canvas_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.addWidget(self.canvas)
 
         layout.addWidget(self.canvas_container, stretch=1)
 
@@ -1570,12 +2214,22 @@ class ImageEditorDialog(QDialog):
         """)
         self.canvas.bg_color = QColor(245, 245, 248) if is_light else QColor(20, 20, 22)
         self.canvas.update()
+        # 更新标题栏主题
+        if hasattr(self, 'title_bar'):
+            self.title_bar.update_theme(t)
+        # 确保浮动工具栏和属性面板在最上层
+        self.toolbar.raise_()
+        self.style_bar.raise_()
+        self.prop_panel.raise_()
 
     def _get_color(self):
-        return self.toolbar.get_color()
+        return self.style_bar.get_color()
 
     def _get_line_width(self):
-        return self.toolbar.get_line_width()
+        return self.style_bar.get_line_width()
+
+    def _get_line_style(self):
+        return self.style_bar.get_line_style()
 
     def _set_tool(self, tool):
         self.tool = tool
@@ -1590,10 +2244,40 @@ class ImageEditorDialog(QDialog):
             f'当前工具: {tool_names.get(tool, tool)}  |  Esc返回浏览')
 
     def _on_color_changed(self, color):
-        pass  # 颜色已存储在 toolbar 中
+        self.current_color = color
+        # 同步更新选中元件的颜色
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['color'] = color
+            self.prop_panel.current_color = color
+            self.prop_panel._update_color_btn_states()
+            self.canvas.update()
+            self._trigger_auto_save()
 
     def _on_width_changed(self, width):
-        pass
+        self.current_line_width = width
+        # 同步更新选中元件的线宽
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['width'] = width
+            self.prop_panel.width_spin.blockSignals(True)
+            self.prop_panel.width_spin.setValue(width)
+            self.prop_panel.width_spin.blockSignals(False)
+            self.canvas.update()
+            self._trigger_auto_save()
+
+    def _on_style_changed(self, style):
+        self.current_line_style = style
+        # 同步更新选中元件的线型
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['line_style'] = style
+            style_idx = {'solid': 0, 'dashed': 1, 'dotted': 2, 'wavy': 3}.get(style, 0)
+            self.prop_panel.line_style_combo.blockSignals(True)
+            self.prop_panel.line_style_combo.setCurrentIndex(style_idx)
+            self.prop_panel.line_style_combo.blockSignals(False)
+            self.canvas.update()
+            self._trigger_auto_save()
 
     def _on_action(self, action):
         if action == 'undo':
@@ -1660,8 +2344,17 @@ class ImageEditorDialog(QDialog):
                 self.prop_panel.hide()
                 self.canvas.update()
 
+    def _auto_save(self):
+        """自动保存当前编辑"""
+        self.canvas.save_annotated(self.image_path)
+
+    def _trigger_auto_save(self):
+        """触发自动保存（延迟1秒）"""
+        self._auto_save_timer.start(1000)
+
     def _save(self):
         self.canvas.save_annotated(self.image_path)
+        self.image_updated.emit(self.image_path)
         self.accept()
 
     def _delete_selected(self):
@@ -1676,19 +2369,27 @@ class ImageEditorDialog(QDialog):
         idx = self.canvas.selected_index
         if 0 <= idx < len(self.canvas.annotations):
             self.canvas.annotations[idx][1]['color'] = color
+            # 同步更新属性面板的颜色状态
+            self.prop_panel.current_color = color
+            self.prop_panel._update_color_btn_states()
             self.canvas.update()
+            self._trigger_auto_save()
 
     def _on_prop_bg_color(self, color):
         idx = self.canvas.selected_index
         if 0 <= idx < len(self.canvas.annotations):
             self.canvas.annotations[idx][1]['bg_color'] = color
+            self.prop_panel.current_bg_color = color
+            self.prop_panel._update_bg_color_btn_states()
             self.canvas.update()
+            self._trigger_auto_save()
 
     def _on_prop_opacity(self, val):
         idx = self.canvas.selected_index
         if 0 <= idx < len(self.canvas.annotations):
             self.canvas.annotations[idx][1]['bg_opacity'] = int(val * 255 / 100)
             self.canvas.update()
+            self._trigger_auto_save()
 
     def _on_prop_rotation(self, deg):
         idx = self.canvas.selected_index
@@ -1696,9 +2397,39 @@ class ImageEditorDialog(QDialog):
             self.canvas.annotations[idx][1]['rotation'] = deg
             self._update_anchor(idx)
             self.canvas.update()
+            self._trigger_auto_save()
 
     def _on_prop_delete(self):
         self._delete_selected()
+        self._trigger_auto_save()
+
+    def _on_prop_line_style(self, style):
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['line_style'] = style
+            self.canvas.update()
+            self._trigger_auto_save()
+
+    def _on_prop_width(self, w):
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            self.canvas.annotations[idx][1]['width'] = w
+            self.canvas.update()
+            self._trigger_auto_save()
+
+    def _on_prop_size(self, w, h):
+        """修改元件尺寸（仅对矩形和圆形有效）"""
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(self.canvas.annotations):
+            atype, data = self.canvas.annotations[idx]
+            if 'w' in data and 'h' in data:
+                data['w'] = w
+                data['h'] = h
+                # 更新锚点
+                data['anchor_x'] = data['x'] + data['w'] / 2
+                data['anchor_y'] = data['y'] + data['h'] / 2
+                self.canvas.update()
+                self._trigger_auto_save()
 
     def _update_anchor(self, idx):
         """更新注释的旋转/缩放锚点为中心"""
@@ -1740,12 +2471,76 @@ class _EditorCanvas(QWidget):
         self._drag_handle = -1  # -1=none, 0-7=resize, 8=rotate
         self._drag_start_pos = None
         self._drag_start_data = None
+        self._dragging_annotation = False  # 是否在拖动整个注释
+        self._drag_annot_start_img_pos = None  # 注释拖动起始图片坐标
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+    
+    def _notify_modified(self):
+        """通知编辑器注释已修改，触发自动保存"""
+        if hasattr(self.editor, '_trigger_auto_save'):
+            self.editor._trigger_auto_save()
+
+    def _annot_json_path(self):
+        """获取注释数据文件路径"""
+        if self.image_path:
+            return os.path.splitext(self.image_path)[0] + '.annotations.json'
+        return None
+
+    def _serialize_annotation(self, ann):
+        """将单个注释序列化为可JSON化的字典"""
+        atype, data = ann
+        d = {'type': atype}
+        for k, v in data.items():
+            if isinstance(v, QColor):
+                d[k] = {'__color__': v.name()}
+            else:
+                d[k] = v
+        return d
+
+    def _deserialize_annotation(self, d):
+        """从字典反序列化单个注释"""
+        atype = d.pop('type')
+        data = {}
+        for k, v in d.items():
+            if isinstance(v, dict) and '__color__' in v:
+                data[k] = QColor(v['__color__'])
+            else:
+                data[k] = v
+        return (atype, data)
+
+    def save_annotations_json(self):
+        """保存注释数据到JSON文件"""
+        json_path = self._annot_json_path()
+        if not json_path or not self.annotations:
+            # 如果没有注释，删除旧的JSON文件
+            if json_path and os.path.exists(json_path):
+                os.remove(json_path)
+            return
+        try:
+            serialized = [self._serialize_annotation(ann) for ann in self.annotations]
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(serialized, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存注释数据失败: {e}")
+
+    def load_annotations_json(self):
+        """从JSON文件加载注释数据"""
+        json_path = self._annot_json_path()
+        if not json_path or not os.path.exists(json_path):
+            return
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                serialized = json.load(f)
+            self.annotations = [self._deserialize_annotation(d) for d in serialized]
+        except Exception as e:
+            print(f"加载注释数据失败: {e}")
+            self.annotations = []
 
     def load_image(self):
         if self.image_path and os.path.exists(self.image_path):
             self.pixmap = QPixmap(self.image_path)
+            self.load_annotations_json()
             self.update()
 
     def _img_offset(self):
@@ -1905,8 +2700,16 @@ class _EditorCanvas(QWidget):
                 painter.rotate(rotation)
                 painter.translate(-sx, -sy)
 
+            # 应用线型
+            line_style = data.get('line_style', 'solid')
+            style_map = {'solid': Qt.SolidLine, 'dashed': Qt.DashLine,
+                         'dotted': Qt.DotLine, 'wavy': Qt.DashDotDotLine}
             pen = QPen(ann_color, ann_width)
+            pen.setStyle(style_map.get(line_style, Qt.SolidLine))
             painter.setPen(pen)
+
+            bg_color_ann = data.get('bg_color')
+            bg_opacity_ann = data.get('bg_opacity', 140)
 
             if atype == 'text':
                 painter.setPen(QPen(ann_color, 1))
@@ -1915,20 +2718,29 @@ class _EditorCanvas(QWidget):
                 fm = painter.fontMetrics()
                 text_rect = fm.boundingRect(data['text'])
                 scr_x, scr_y = self._to_screen(data['x'], data['y'])
-                bg_color = data.get('bg_color')
-                bg_opacity = data.get('bg_opacity', 140)
                 bg_rect = QRect(scr_x - 2, scr_y - text_rect.height() - 2,
                                 text_rect.width() + 4, text_rect.height() + 4)
-                if bg_color:
-                    painter.fillRect(bg_rect, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), bg_opacity))
+                if bg_color_ann:
+                    painter.fillRect(bg_rect, QColor(bg_color_ann.red(), bg_color_ann.green(), bg_color_ann.blue(), bg_opacity_ann))
                 else:
-                    painter.fillRect(bg_rect, QColor(0, 0, 0, bg_opacity))
+                    painter.fillRect(bg_rect, QColor(0, 0, 0, bg_opacity_ann))
                 painter.setPen(QPen(ann_color, 1))
                 painter.drawText(scr_x, scr_y, data['text'])
             elif atype == 'arrow':
                 sx1, sy1 = self._to_screen(data['x1'], data['y1'])
                 sx2, sy2 = self._to_screen(data['x2'], data['y2'])
-                self._draw_arrow(painter, sx1, sy1, sx2, sy2, ann_color, ann_width)
+                # 使用带线型的箭头绘制
+                painter.setPen(pen)
+                painter.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+                angle = math.atan2(sy2 - sy1, sx2 - sx1)
+                arrow_size = max(10, ann_width * 5)
+                p1 = QPoint(int(sx2 - arrow_size * math.cos(angle - 0.4)),
+                             int(sy2 - arrow_size * math.sin(angle - 0.4)))
+                p2 = QPoint(int(sx2 - arrow_size * math.cos(angle + 0.4)),
+                             int(sy2 - arrow_size * math.sin(angle + 0.4)))
+                painter.setBrush(ann_color)
+                painter.drawPolygon(QPolygon([QPoint(int(sx2), int(sy2)), p1, p2]))
+                painter.setBrush(Qt.NoBrush)
             elif atype == 'line':
                 sx1, sy1 = self._to_screen(data['x1'], data['y1'])
                 sx2, sy2 = self._to_screen(data['x2'], data['y2'])
@@ -1936,13 +2748,15 @@ class _EditorCanvas(QWidget):
             elif atype == 'rect':
                 sx, sy = self._to_screen(data['x'], data['y'])
                 sw, sh = data['w'] * self.scale, data['h'] * self.scale
-                painter.setBrush(QColor(ann_color.red(), ann_color.green(), ann_color.blue(), 30))
+                fill_color = bg_color_ann if bg_color_ann else ann_color
+                painter.setBrush(QColor(fill_color.red(), fill_color.green(), fill_color.blue(), bg_opacity_ann))
                 painter.drawRect(QRectF(sx, sy, sw, sh))
                 painter.setBrush(Qt.NoBrush)
             elif atype == 'circle':
                 sx, sy = self._to_screen(data['x'], data['y'])
                 sw, sh = data['w'] * self.scale, data['h'] * self.scale
-                painter.setBrush(QColor(ann_color.red(), ann_color.green(), ann_color.blue(), 30))
+                fill_color = bg_color_ann if bg_color_ann else ann_color
+                painter.setBrush(QColor(fill_color.red(), fill_color.green(), fill_color.blue(), bg_opacity_ann))
                 painter.drawEllipse(QRectF(sx, sy, sw, sh))
                 painter.setBrush(Qt.NoBrush)
             elif atype == 'measure':
@@ -2098,6 +2912,11 @@ class _EditorCanvas(QWidget):
             if idx >= 0:
                 self.selected_index = idx
                 self.editor.show_property_panel(self.annotations[idx][1])
+                # 开始拖动
+                self._dragging_annotation = True
+                self._drag_start_pos = event.pos()
+                self._drag_start_data = dict(self.annotations[idx][1])
+                self._drag_annot_start_img_pos = (img_x, img_y)
             else:
                 self.selected_index = -1
                 self.editor.hide_property_panel()
@@ -2120,9 +2939,12 @@ class _EditorCanvas(QWidget):
                     'rotation': 0, 'scale_x': 1.0, 'scale_y': 1.0,
                     'bg_color': None, 'bg_opacity': 140,
                     'anchor_x': ix, 'anchor_y': iy,
+                    'line_style': 'solid',
                 }))
                 self.selected_index = len(self.annotations) - 1
                 self.editor.show_property_panel(self.annotations[-1][1])
+                self.editor._set_tool('select')
+                self._notify_modified()
                 self.update()
         elif self.tool == 'eraser':
             ix, iy = self._img_coords(event.pos())
@@ -2134,6 +2956,7 @@ class _EditorCanvas(QWidget):
                     self.editor.hide_property_panel()
                 elif self.selected_index > idx:
                     self.selected_index -= 1
+                self._notify_modified()
                 self.update()
         else:
             self.drawing = True
@@ -2165,6 +2988,36 @@ class _EditorCanvas(QWidget):
             self.update()
             return
 
+        # 拖拽整个注释
+        if self._dragging_annotation and self._drag_start_pos and self._drag_annot_start_img_pos:
+            if 0 <= self.selected_index < len(self.annotations):
+                current_img_x, current_img_y = self._img_coords(event.pos())
+                start_img_x, start_img_y = self._drag_annot_start_img_pos
+                dx = current_img_x - start_img_x
+                dy = current_img_y - start_img_y
+                atype, data = self.annotations[self.selected_index]
+                # 根据注释类型移动坐标
+                if atype == 'text':
+                    data['x'] = self._drag_start_data['x'] + dx
+                    data['y'] = self._drag_start_data['y'] + dy
+                    data['anchor_x'] = data['x']
+                    data['anchor_y'] = data['y']
+                elif atype in ('arrow', 'line', 'measure'):
+                    data['x1'] = self._drag_start_data['x1'] + dx
+                    data['y1'] = self._drag_start_data['y1'] + dy
+                    data['x2'] = self._drag_start_data['x2'] + dx
+                    data['y2'] = self._drag_start_data['y2'] + dy
+                    data['anchor_x'] = (data['x1'] + data['x2']) / 2
+                    data['anchor_y'] = (data['y1'] + data['y2']) / 2
+                elif atype in ('rect', 'circle'):
+                    data['x'] = self._drag_start_data['x'] + dx
+                    data['y'] = self._drag_start_data['y'] + dy
+                    data['anchor_x'] = data['x'] + data['w'] / 2
+                    data['anchor_y'] = data['y'] + data['h'] / 2
+                self.update()
+                self._notify_modified()
+            return
+
         if self.dragging and self.last_pos:
             delta = event.pos() - self.last_pos
             self.offset += delta
@@ -2185,6 +3038,14 @@ class _EditorCanvas(QWidget):
             self._drag_start_data = None
             return
 
+        # 结束注释拖拽
+        if self._dragging_annotation:
+            self._dragging_annotation = False
+            self._drag_start_pos = None
+            self._drag_start_data = None
+            self._drag_annot_start_img_pos = None
+            return
+
         if self.dragging:
             self.dragging = False
             self.last_pos = None
@@ -2194,10 +3055,12 @@ class _EditorCanvas(QWidget):
             ix2, iy2 = self._img_coords(self.draw_current)
             color = self.editor._get_color()
             width = self.editor._get_line_width()
+            line_style = self.editor._get_line_style()
             base_props = {
                 'color': color, 'width': width,
                 'rotation': 0, 'scale_x': 1.0, 'scale_y': 1.0,
                 'bg_color': None, 'bg_opacity': 140,
+                'line_style': line_style,
             }
             if self.tool == 'arrow':
                 base_props.update({'x1': ix1, 'y1': iy1, 'x2': ix2, 'y2': iy2})
@@ -2235,9 +3098,11 @@ class _EditorCanvas(QWidget):
                 base_props['anchor_y'] = (iy1 + iy2) / 2
                 self.annotations.append(('measure', base_props))
 
-            # 自动选中新创建的注释
+            # 自动选中新创建的注释并切换到选择工具
             self.selected_index = len(self.annotations) - 1
             self.editor.show_property_panel(self.annotations[-1][1])
+            self.editor._set_tool('select')
+            self._notify_modified()
 
             self.drawing = False
             self.draw_start = None
@@ -2311,9 +3176,20 @@ class _EditorCanvas(QWidget):
                 data['y2'] = y2 + dy_img
             data['anchor_x'] = (data['x1'] + data['x2']) / 2
             data['anchor_y'] = (data['y1'] + data['y2']) / 2
+        
+        self._notify_modified()
 
     def save_annotated(self, path):
         if not self.pixmap:
+            return
+        # 保存注释数据到JSON（用于后续编辑）
+        self.save_annotations_json()
+        # 生成带注释的预览图（保存到 .preview.png 文件，不覆盖原图）
+        if not self.annotations:
+            # 没有注释时删除旧的预览图
+            preview_path = os.path.splitext(path)[0] + '.preview.png'
+            if os.path.exists(preview_path):
+                os.remove(preview_path)
             return
         result = QPixmap(self.pixmap.size())
         result.fill(QColor(0, 0, 0, 0))
@@ -2335,20 +3211,24 @@ class _EditorCanvas(QWidget):
                 painter.translate(-anchor_x, -anchor_y)
 
             pen = QPen(color, width)
+            line_style = data.get('line_style', 'solid')
+            style_map = {'solid': Qt.SolidLine, 'dashed': Qt.DashLine,
+                         'dotted': Qt.DotLine, 'wavy': Qt.DashDotDotLine}
+            pen.setStyle(style_map.get(line_style, Qt.SolidLine))
             painter.setPen(pen)
+            bg_color_ann = data.get('bg_color')
+            bg_opacity_ann = data.get('bg_opacity', 140)
             if atype == 'text':
                 painter.setPen(QPen(color, 1))
                 painter.setFont(QFont("SimSun", 14, QFont.Bold))
-                bg_color = data.get('bg_color')
-                bg_opacity = data.get('bg_opacity', 140)
                 fm = painter.fontMetrics()
                 text_rect = fm.boundingRect(data['text'])
                 bg_rect = QRect(data['x'] - 2, data['y'] - text_rect.height() - 2,
                                 text_rect.width() + 4, text_rect.height() + 4)
-                if bg_color:
-                    painter.fillRect(bg_rect, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), bg_opacity))
+                if bg_color_ann:
+                    painter.fillRect(bg_rect, QColor(bg_color_ann.red(), bg_color_ann.green(), bg_color_ann.blue(), bg_opacity_ann))
                 else:
-                    painter.fillRect(bg_rect, QColor(0, 0, 0, bg_opacity))
+                    painter.fillRect(bg_rect, QColor(0, 0, 0, bg_opacity_ann))
                 painter.setPen(QPen(color, 1))
                 painter.drawText(data['x'], data['y'], data['text'])
                 painter.setPen(pen)
@@ -2357,9 +3237,15 @@ class _EditorCanvas(QWidget):
             elif atype == 'line':
                 painter.drawLine(int(data['x1']), int(data['y1']), int(data['x2']), int(data['y2']))
             elif atype == 'rect':
+                fill_color = bg_color_ann if bg_color_ann else color
+                painter.setBrush(QColor(fill_color.red(), fill_color.green(), fill_color.blue(), bg_opacity_ann))
                 painter.drawRect(data['x'], data['y'], data['w'], data['h'])
+                painter.setBrush(Qt.NoBrush)
             elif atype == 'circle':
+                fill_color = bg_color_ann if bg_color_ann else color
+                painter.setBrush(QColor(fill_color.red(), fill_color.green(), fill_color.blue(), bg_opacity_ann))
                 painter.drawEllipse(data['x'], data['y'], data['w'], data['h'])
+                painter.setBrush(Qt.NoBrush)
             elif atype == 'measure':
                 painter.drawLine(int(data['x1']), int(data['y1']), int(data['x2']), int(data['y2']))
                 painter.setBrush(color)
@@ -2377,9 +3263,9 @@ class _EditorCanvas(QWidget):
                 painter.restore()
 
         painter.end()
-        base, ext = os.path.splitext(path)
-        save_path = base + '_annotated' + ext
-        result.save(save_path)
+        # 保存带注释的预览图（不覆盖原图）
+        preview_path = os.path.splitext(path)[0] + '.preview.png'
+        result.save(preview_path)
 
 
 # ── 内联图片控件（支持悬停缩放与双击浏览） ─────────────────
@@ -2478,14 +3364,510 @@ class _ImageLabel(QWidget):
         self.double_clicked.emit(self.img_id, self.img_path)
 
 
+class _RichTextEditorDialog(QDialog):
+    """图文编辑对话框：参考Trilium Notes设计，即时保存+完整工具栏+笔记列表"""
+    def __init__(self, parent=None, record_type='medical', disease_id=None, active_db=None):
+        super().__init__(parent)
+        self.setWindowTitle('图文编辑器')
+        self.setMinimumSize(1000, 650)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.record_type = record_type
+        self.disease_id = disease_id
+        self.active_db = active_db or DATABASE
+        self._current_record_id = None
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._auto_save)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, '图文编辑器')
+        layout.addWidget(self.title_bar)
+
+        # 主内容区：左右分栏
+        main_splitter = QSplitter(Qt.Horizontal)
+
+        # ── 左侧：笔记列表 ──
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
+        # 笔记列表头部
+        list_header = QWidget()
+        list_header.setFixedHeight(36)
+        list_header_layout = QHBoxLayout(list_header)
+        list_header_layout.setContentsMargins(8, 4, 8, 4)
+        list_label = QLabel('笔记列表')
+        list_label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        list_header_layout.addWidget(list_label)
+        btn_new = QPushButton('+ 新建')
+        btn_new.setFixedHeight(26)
+        btn_new.clicked.connect(self._new_record)
+        list_header_layout.addWidget(btn_new)
+        left_layout.addWidget(list_header)
+
+        # 笔记列表
+        self.note_list = QListWidget()
+        self.note_list.currentRowChanged.connect(self._on_note_selected)
+        left_layout.addWidget(self.note_list)
+
+        # 删除按钮
+        btn_del = QPushButton('删除选中笔记')
+        btn_del.setObjectName('dangerBtn')
+        btn_del.setFixedHeight(30)
+        btn_del.clicked.connect(self._delete_current_record)
+        left_layout.addWidget(btn_del)
+
+        left_panel.setFixedWidth(200)
+        main_splitter.addWidget(left_panel)
+
+        # ── 右侧：编辑区 ──
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # 标题输入区
+        title_bar = QWidget()
+        title_bar.setFixedHeight(50)
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(12, 8, 12, 8)
+        self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText('输入标题...')
+        self.title_input.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+        self.title_input.textChanged.connect(self._on_content_changed)
+        title_layout.addWidget(self.title_input)
+        # 保存状态指示
+        self.save_indicator = QLabel('已保存')
+        self.save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+        title_layout.addWidget(self.save_indicator)
+        right_layout.addWidget(title_bar)
+
+        # 格式化工具栏
+        self._build_toolbar(right_layout)
+
+        # 富文本编辑器
+        self.text_edit = QTextEdit()
+        self.text_edit.setAcceptRichText(True)
+        self.text_edit.textChanged.connect(self._on_content_changed)
+        right_layout.addWidget(self.text_edit, stretch=1)
+
+        # 标签输入区
+        tag_bar = QWidget()
+        tag_bar.setFixedHeight(36)
+        tag_layout = QHBoxLayout(tag_bar)
+        tag_layout.setContentsMargins(12, 4, 12, 4)
+        tag_label = QLabel('标签：')
+        tag_layout.addWidget(tag_label)
+        self.tag_input = QLineEdit()
+        self.tag_input.setPlaceholderText('输入标签，用逗号分隔...')
+        self.tag_input.textChanged.connect(self._on_content_changed)
+        tag_layout.addWidget(self.tag_input)
+        right_layout.addWidget(tag_bar)
+
+        main_splitter.addWidget(right_panel)
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 1)
+
+        layout.addWidget(main_splitter)
+
+        # 加载笔记列表
+        self._load_note_list()
+
+    def _build_toolbar(self, parent_layout):
+        """构建格式化工具栏，参考Trilium Notes的工具栏设计"""
+        toolbar_widget = QWidget()
+        toolbar_widget.setFixedHeight(36)
+        tb = QHBoxLayout(toolbar_widget)
+        tb.setContentsMargins(8, 2, 8, 2)
+        tb.setSpacing(2)
+
+        # 标题级别
+        heading_combo = QComboBox()
+        heading_combo.addItems(['正文', '标题1', '标题2', '标题3', '标题4'])
+        heading_combo.setFixedWidth(80)
+        heading_combo.setFixedHeight(28)
+        heading_combo.currentIndexChanged.connect(self._set_heading)
+        tb.addWidget(heading_combo)
+        self._heading_combo = heading_combo
+
+        tb.addSpacing(4)
+        # 分隔线
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.VLine)
+        sep1.setStyleSheet("color: #444;")
+        tb.addWidget(sep1)
+        tb.addSpacing(4)
+
+        # 文本样式按钮
+        style_buttons = [
+            ('B', '加粗', self._toggle_bold),
+            ('I', '斜体', self._toggle_italic),
+            ('U', '下划线', self._toggle_underline),
+            ('S', '删除线', self._toggle_strikethrough),
+        ]
+        for text, tip, callback in style_buttons:
+            btn = QPushButton(text)
+            btn.setFixedSize(30, 28)
+            btn.setFont(QFont("SimSun", 10, QFont.Bold))
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addSpacing(4)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet("color: #444;")
+        tb.addWidget(sep2)
+        tb.addSpacing(4)
+
+        # 列表按钮
+        list_buttons = [
+            ('•', '无序列表', self._toggle_bullet_list),
+            ('1.', '有序列表', self._toggle_ordered_list),
+            ('☑', '待办列表', self._toggle_todo_list),
+        ]
+        for text, tip, callback in list_buttons:
+            btn = QPushButton(text)
+            btn.setFixedSize(30, 28)
+            btn.setFont(QFont("SimSun", 10))
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addSpacing(4)
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.VLine)
+        sep3.setStyleSheet("color: #444;")
+        tb.addWidget(sep3)
+        tb.addSpacing(4)
+
+        # 对齐按钮
+        align_buttons = [
+            ('≡', '左对齐', self._align_left),
+            ('≡', '居中', self._align_center),
+            ('≡', '右对齐', self._align_right),
+        ]
+        for text, tip, callback in align_buttons:
+            btn = QPushButton(text)
+            btn.setFixedSize(30, 28)
+            btn.setFont(QFont("SimSun", 10))
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addSpacing(4)
+        sep4 = QFrame()
+        sep4.setFrameShape(QFrame.VLine)
+        sep4.setStyleSheet("color: #444;")
+        tb.addWidget(sep4)
+        tb.addSpacing(4)
+
+        # 颜色按钮
+        self._color_btn = QPushButton('A')
+        self._color_btn.setFixedSize(30, 28)
+        self._color_btn.setFont(QFont("SimSun", 10, QFont.Bold))
+        self._color_btn.setToolTip('文字颜色')
+        self._color_btn.clicked.connect(self._set_text_color)
+        tb.addWidget(self._color_btn)
+
+        self._bg_color_btn = QPushButton('▮')
+        self._bg_color_btn.setFixedSize(30, 28)
+        self._bg_color_btn.setFont(QFont("SimSun", 10))
+        self._bg_color_btn.setToolTip('背景颜色')
+        self._bg_color_btn.clicked.connect(self._set_bg_color)
+        tb.addWidget(self._bg_color_btn)
+
+        tb.addSpacing(4)
+        sep5 = QFrame()
+        sep5.setFrameShape(QFrame.VLine)
+        sep5.setStyleSheet("color: #444;")
+        tb.addWidget(sep5)
+        tb.addSpacing(4)
+
+        # 插入按钮
+        btn_img = QPushButton('图片')
+        btn_img.setFixedHeight(28)
+        btn_img.setToolTip('插入图片')
+        btn_img.clicked.connect(self._insert_image)
+        tb.addWidget(btn_img)
+
+        btn_link = QPushButton('链接')
+        btn_link.setFixedHeight(28)
+        btn_link.setToolTip('插入链接')
+        btn_link.clicked.connect(self._insert_link)
+        tb.addWidget(btn_link)
+
+        btn_table = QPushButton('表格')
+        btn_table.setFixedHeight(28)
+        btn_table.setToolTip('插入表格')
+        btn_table.clicked.connect(self._insert_table)
+        tb.addWidget(btn_table)
+
+        btn_hr = QPushButton('—')
+        btn_hr.setFixedSize(30, 28)
+        btn_hr.setToolTip('插入分隔线')
+        btn_hr.clicked.connect(self._insert_hr)
+        tb.addWidget(btn_hr)
+
+        tb.addStretch()
+
+        # 代码块
+        btn_code = QPushButton('</>')
+        btn_code.setFixedHeight(28)
+        btn_code.setToolTip('代码块')
+        btn_code.clicked.connect(self._insert_code_block)
+        tb.addWidget(btn_code)
+
+        parent_layout.addWidget(toolbar_widget)
+
+    # ── 格式化操作 ──
+    def _set_heading(self, idx):
+        sizes = [10, 20, 16, 14, 12]
+        weights = [QFont.Normal, QFont.Bold, QFont.Bold, QFont.Bold, QFont.Bold]
+        fmt = self.text_edit.currentCharFormat()
+        fmt.setFontPointSize(sizes[idx])
+        fmt.setFontWeight(weights[idx])
+        self.text_edit.setCurrentCharFormat(fmt)
+
+    def _toggle_bold(self):
+        self.text_edit.setFontWeight(
+            QFont.Normal if self.text_edit.fontWeight() == QFont.Bold else QFont.Bold
+        )
+
+    def _toggle_italic(self):
+        self.text_edit.setFontItalic(not self.text_edit.fontItalic())
+
+    def _toggle_underline(self):
+        self.text_edit.setFontUnderline(not self.text_edit.fontUnderline())
+
+    def _toggle_strikethrough(self):
+        fmt = self.text_edit.currentCharFormat()
+        fmt.setFontStrikeOut(not fmt.fontStrikeOut())
+        self.text_edit.setCurrentCharFormat(fmt)
+
+    def _toggle_bullet_list(self):
+        self.text_edit.insertList(QTextListFormat.ListDisc)
+
+    def _toggle_ordered_list(self):
+        self.text_edit.insertList(QTextListFormat.ListDecimal)
+
+    def _toggle_todo_list(self):
+        cursor = self.text_edit.textCursor()
+        cursor.insertList(QTextListFormat.ListDisc)
+        cursor.insertText('☐ ')
+
+    def _align_left(self):
+        self.text_edit.setAlignment(Qt.AlignLeft)
+
+    def _align_center(self):
+        self.text_edit.setAlignment(Qt.AlignCenter)
+
+    def _align_right(self):
+        self.text_edit.setAlignment(Qt.AlignRight)
+
+    def _set_text_color(self):
+        from PyQt5.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(Qt.black, self, '选择文字颜色')
+        if color.isValid():
+            self.text_edit.setTextColor(color)
+
+    def _set_bg_color(self):
+        from PyQt5.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(Qt.white, self, '选择背景颜色')
+        if color.isValid():
+            self.text_edit.setTextBackgroundColor(color)
+
+    def _insert_image(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, '选择图片', '', '图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)'
+        )
+        for fp in file_paths:
+            img_dir = os.path.join(APP_DIR, 'images')
+            os.makedirs(img_dir, exist_ok=True)
+            import uuid
+            ext = os.path.splitext(fp)[1]
+            filename = str(uuid.uuid4())[:8] + ext
+            dest = os.path.join(img_dir, filename)
+            shutil.copy2(fp, dest)
+            self.text_edit.insertHtml(
+                f'<img src="{dest}" style="max-width:100%; margin:8px 0;">'
+            )
+
+    def _insert_link(self):
+        from PyQt5.QtWidgets import QInputDialog
+        url, ok = QInputDialog.getText(self, '插入链接', 'URL:')
+        if ok and url:
+            self.text_edit.insertHtml(f'<a href="{url}" style="color:#3f7bf7;">{url}</a>')
+
+    def _insert_table(self):
+        self.text_edit.insertHtml(
+            '<table border="1" style="border-collapse:collapse; width:100%; margin:8px 0;">'
+            '<tr><td style="padding:6px; border:1px solid #444;">&nbsp;</td>'
+            '<td style="padding:6px; border:1px solid #444;">&nbsp;</td></tr>'
+            '<tr><td style="padding:6px; border:1px solid #444;">&nbsp;</td>'
+            '<td style="padding:6px; border:1px solid #444;">&nbsp;</td></tr>'
+            '</table>'
+        )
+
+    def _insert_hr(self):
+        self.text_edit.insertHtml('<hr style="border:1px solid #444; margin:8px 0;">')
+
+    def _insert_code_block(self):
+        self.text_edit.insertHtml(
+            '<pre style="background:#1a1a1e; color:#c8c8cc; padding:12px; '
+            'border-radius:4px; font-family:Consolas,monospace; font-size:13px; '
+            'overflow-x:auto; margin:8px 0;">代码</pre>'
+        )
+
+    # ── 笔记管理 ──
+    def _load_note_list(self):
+        """加载笔记列表"""
+        self.note_list.clear()
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self.record_type == 'medical':
+            c.execute("SELECT id, title FROM medical_records WHERE disease_id=? ORDER BY id DESC",
+                      (self.disease_id,))
+        else:
+            c.execute("SELECT id, title FROM anatomy_records ORDER BY id DESC")
+        rows = c.fetchall()
+        conn.close()
+        for rid, title in rows:
+            item = QListWidgetItem(title or '无标题')
+            item.setData(Qt.UserRole, rid)
+            self.note_list.addItem(item)
+        # 自动选中第一个
+        if self.note_list.count() > 0:
+            self.note_list.setCurrentRow(0)
+
+    def _on_note_selected(self, row):
+        """选中笔记时加载内容"""
+        if row < 0:
+            return
+        item = self.note_list.item(row)
+        if not item:
+            return
+        rid = item.data(Qt.UserRole)
+        self._current_record_id = rid
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self.record_type == 'medical':
+            c.execute("SELECT title, content FROM medical_records WHERE id=?", (rid,))
+        else:
+            c.execute("SELECT title, content FROM anatomy_records WHERE id=?", (rid,))
+        row_data = c.fetchone()
+        conn.close()
+        if row_data:
+            # 阻止自动保存触发
+            self._save_timer.stop()
+            self.title_input.blockSignals(True)
+            self.text_edit.blockSignals(True)
+            self.tag_input.blockSignals(True)
+            self.title_input.setText(row_data[0] or '')
+            self.text_edit.setHtml(row_data[1] or '')
+            self.tag_input.setText('')
+            self.title_input.blockSignals(False)
+            self.text_edit.blockSignals(False)
+            self.tag_input.blockSignals(False)
+            self.save_indicator.setText('已保存')
+            self.save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+
+    def _new_record(self):
+        """新建笔记"""
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self.record_type == 'medical':
+            c.execute("INSERT INTO medical_records (disease_id, title, content) VALUES (?, ?, ?)",
+                      (self.disease_id, '新建笔记', ''))
+        else:
+            c.execute("INSERT INTO anatomy_records (title, content) VALUES (?, ?)",
+                      ('新建笔记', ''))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        self._load_note_list()
+        # 选中新建的笔记
+        for i in range(self.note_list.count()):
+            if self.note_list.item(i).data(Qt.UserRole) == new_id:
+                self.note_list.setCurrentRow(i)
+                break
+
+    def _delete_current_record(self):
+        """删除当前笔记"""
+        if self._current_record_id is None:
+            return
+        reply = QMessageBox.question(
+            self, '确认删除', '确定要删除此笔记吗？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self.record_type == 'medical':
+                c.execute("DELETE FROM medical_records WHERE id=?", (self._current_record_id,))
+            else:
+                c.execute("DELETE FROM anatomy_records WHERE id=?", (self._current_record_id,))
+            conn.commit()
+            conn.close()
+            self._current_record_id = None
+            self._load_note_list()
+
+    def _on_content_changed(self):
+        """内容变更时触发自动保存（防抖500ms）"""
+        self.save_indicator.setText('编辑中...')
+        self.save_indicator.setStyleSheet("color: #f0a030; font-size: 11px; background: transparent;")
+        # 更新列表项标题
+        if self._current_record_id is not None:
+            current_item = self.note_list.currentItem()
+            if current_item:
+                current_item.setText(self.title_input.text() or '无标题')
+        self._save_timer.start(500)
+
+    def _auto_save(self):
+        """自动保存到数据库"""
+        if self._current_record_id is None:
+            return
+        title = self.title_input.text().strip() or '无标题'
+        content = self.text_edit.toHtml()
+        try:
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self.record_type == 'medical':
+                c.execute("UPDATE medical_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._current_record_id))
+            else:
+                c.execute("UPDATE anatomy_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._current_record_id))
+            conn.commit()
+            conn.close()
+            self.save_indicator.setText('已保存')
+            self.save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+        except Exception as e:
+            self.save_indicator.setText(f'保存失败: {e}')
+            self.save_indicator.setStyleSheet("color: #e64a3a; font-size: 11px; background: transparent;")
+
+    def closeEvent(self, event):
+        """关闭前保存"""
+        self._save_timer.stop()
+        self._auto_save()
+        super().closeEvent(event)
+
+
 # ── 详情面板 ──────────────────────────────────────────────
 class DetailPanel(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, user_info=None, user_password=None):
         super().__init__(parent)
         self.current_disease_id = None
         self.active_db = DATABASE
         self.disease_data = None
         self.current_tab = 0
+        self.user_info = user_info
+        self.user_password = user_password
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2518,12 +3900,17 @@ class DetailPanel(QWidget):
         # 内容区：可滚动页面容器
         self.page_scroll = QScrollArea()
         self.page_scroll.setWidgetResizable(True)
-        self.page_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.page_scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollBar:vertical { width: 8px; background: transparent; }"
+            "QScrollBar::handle:vertical { background: #555; border-radius: 4px; min-height: 30px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        )
         self.page_container = QWidget()
+        self.page_container.setStyleSheet("background: transparent;")
         self.page_layout = QVBoxLayout(self.page_container)
-        self.page_layout.setContentsMargins(16, 16, 16, 16)
+        self.page_layout.setContentsMargins(20, 20, 20, 20)
         self.page_layout.setSpacing(8)
-        self.page_layout.addStretch()
         self.page_scroll.setWidget(self.page_container)
         self.page_scroll.hide()
         layout.addWidget(self.page_scroll)
@@ -2554,6 +3941,32 @@ class DetailPanel(QWidget):
         self.img_action_bar.hide()
         layout.addWidget(self.img_action_bar)
 
+        # 医学资料/影像解剖操作栏
+        self.record_action_bar = QWidget()
+        record_action_layout = QHBoxLayout(self.record_action_bar)
+        record_action_layout.setContentsMargins(8, 4, 8, 4)
+        record_action_layout.setSpacing(8)
+
+        self.btn_add_record = QPushButton('添加图文')
+        self.btn_add_record.setFixedHeight(32)
+        self.btn_add_record.clicked.connect(self._add_record)
+        record_action_layout.addWidget(self.btn_add_record)
+
+        self.btn_edit_record = QPushButton('编辑选中')
+        self.btn_edit_record.setFixedHeight(32)
+        self.btn_edit_record.clicked.connect(self._edit_record)
+        record_action_layout.addWidget(self.btn_edit_record)
+
+        self.btn_delete_record = QPushButton('删除选中')
+        self.btn_delete_record.setFixedHeight(32)
+        self.btn_delete_record.setObjectName('dangerBtn')
+        self.btn_delete_record.clicked.connect(self._delete_record)
+        record_action_layout.addWidget(self.btn_delete_record)
+
+        record_action_layout.addStretch()
+        self.record_action_bar.hide()
+        layout.addWidget(self.record_action_bar)
+
         # 存储当前影像页面的图片列表（用于双击浏览）
         self._current_image_list = []
 
@@ -2565,8 +3978,10 @@ class DetailPanel(QWidget):
             btn.style().polish(btn)
         # 影像操作栏和页面滚动区仅在影像所见标签页显示
         is_imaging = (idx == 2)
+        is_record = (idx == 3 or idx == 4)  # 医学资料或影像解剖
         self.img_action_bar.setVisible(is_imaging)
         self.page_scroll.setVisible(is_imaging)
+        self.record_action_bar.setVisible(is_record)
         self.content_browser.setVisible(not is_imaging)
         self._refresh_content()
 
@@ -2588,8 +4003,17 @@ class DetailPanel(QWidget):
             self, '选择图片', '', 'Images (*.png *.jpg *.jpeg *.bmp *.gif)')
         if not file_paths:
             return
+        # 询问是否加密
+        encrypt = QMessageBox.question(
+            self, '加密选项', '是否加密这些图片？\n（加密后只有当前用户可以查看）',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) == QMessageBox.Yes
+        
         img_dir = os.path.join(APP_DIR, 'images')
         os.makedirs(img_dir, exist_ok=True)
+        owner_id = self.user_info.get('id') if self.user_info else None
+        encryption_hash = hash_password(self.user_password) if self.user_password else None
+        
         for fp in file_paths:
             filename = os.path.basename(fp)
             dest = os.path.join(img_dir, filename)
@@ -2602,7 +4026,19 @@ class DetailPanel(QWidget):
                 dest = os.path.join(img_dir, filename)
             if fp != dest:
                 shutil.copy2(fp, dest)
-            add_image(self.active_db, self.current_disease_id, filename, '', '', '', 'image')
+            # 如果需要加密，加密图片
+            if encrypt and self.user_password:
+                try:
+                    key = generate_key(self.user_password)
+                    encrypt_image(dest, key)
+                except Exception as e:
+                    QMessageBox.warning(self, '加密失败', f'图片加密失败: {e}')
+            # 添加到数据库
+            add_image(
+                self.active_db, self.current_disease_id, filename, '', '', '', 
+                'image', owner_id=owner_id, encrypted=encrypt, 
+                encryption_hash=encryption_hash if encrypt else None
+            )
         self._refresh_content()
 
     def _paste_clipboard_image(self):
@@ -2614,6 +4050,12 @@ class DetailPanel(QWidget):
         if pixmap.isNull():
             QMessageBox.warning(self, '提示', '剪贴板中没有图片')
             return
+        # 询问是否加密
+        encrypt = QMessageBox.question(
+            self, '加密选项', '是否加密这张图片？\n（加密后只有当前用户可以查看）',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) == QMessageBox.Yes
+        
         img_dir = os.path.join(APP_DIR, 'images')
         os.makedirs(img_dir, exist_ok=True)
         # 生成唯一文件名
@@ -2624,7 +4066,22 @@ class DetailPanel(QWidget):
             filename = f'paste_{int(time.time() * 1000)}_{os.getpid()}.png'
             dest = os.path.join(img_dir, filename)
         pixmap.save(dest, 'PNG')
-        add_image(self.active_db, self.current_disease_id, filename, '', '', '', 'image')
+        
+        # 如果需要加密，加密图片
+        owner_id = self.user_info.get('id') if self.user_info else None
+        encryption_hash = hash_password(self.user_password) if self.user_password else None
+        if encrypt and self.user_password:
+            try:
+                key = generate_key(self.user_password)
+                encrypt_image(dest, key)
+            except Exception as e:
+                QMessageBox.warning(self, '加密失败', f'图片加密失败: {e}')
+        
+        add_image(
+            self.active_db, self.current_disease_id, filename, '', '', '', 
+            'image', owner_id=owner_id, encrypted=encrypt, 
+            encryption_hash=encryption_hash if encrypt else None
+        )
         self._refresh_content()
 
     def _refresh_content(self):
@@ -2676,7 +4133,7 @@ class DetailPanel(QWidget):
         self.content_browser.setHtml(html)
 
     def _show_imaging_tab(self, d):
-        # 清除页面容器中的旧内容
+        # 清除页面容器中的旧内容（包括 stretch）
         while self.page_layout.count():
             item = self.page_layout.takeAt(0)
             w = item.widget()
@@ -2686,19 +4143,20 @@ class DetailPanel(QWidget):
 
         if not self.current_disease_id:
             lbl = QLabel('请先选择疾病')
-            lbl.setStyleSheet("color: #666; padding: 16px;")
-            self.page_layout.insertWidget(self.page_layout.count() - 1, lbl)
+            lbl.setStyleSheet("color: #666; padding: 16px; background: transparent;")
+            self.page_layout.addWidget(lbl)
+            self.page_layout.addStretch()
             return
 
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, filename, caption, media_type FROM images WHERE disease_id=?",
+        c.execute("SELECT id, filename, caption, media_type, owner_id, encrypted, encryption_hash FROM images WHERE disease_id=?",
                   (self.current_disease_id,))
         rows = c.fetchall()
         conn.close()
 
         # 收集所有图片路径（用于双击浏览）
-        for img_id, filename, caption, media_type in rows:
+        for img_id, filename, caption, media_type, owner_id, encrypted, encryption_hash in rows:
             img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
             if img_path and os.path.exists(img_path):
                 self._current_image_list.append((img_id, img_path))
@@ -2710,8 +4168,8 @@ class DetailPanel(QWidget):
             sizes = {1: '20px', 2: '16px', 3: '14px'}
             size = sizes.get(level, '14px')
             lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {color}; font-size: {size}; font-weight: bold; margin-top: 12px; margin-bottom: 4px;")
-            self.page_layout.insertWidget(self.page_layout.count() - 1, lbl)
+            lbl.setStyleSheet(f"color: {color}; font-size: {size}; font-weight: bold; margin-top: 12px; margin-bottom: 4px; background: transparent;")
+            self.page_layout.addWidget(lbl)
 
         # 辅助方法：添加正文
         def add_body(text):
@@ -2720,26 +4178,60 @@ class DetailPanel(QWidget):
             lbl = QLabel(text)
             lbl.setWordWrap(True)
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            lbl.setStyleSheet("color: #c8c8cc; line-height: 1.8; font-size: 13px; margin-bottom: 4px;")
-            self.page_layout.insertWidget(self.page_layout.count() - 1, lbl)
+            lbl.setStyleSheet("color: #c8c8cc; line-height: 1.8; font-size: 13px; margin-bottom: 4px; background: transparent;")
+            self.page_layout.addWidget(lbl)
 
         # 辅助方法：添加内联图片
-        def add_image(img_id, filename, caption):
+        def add_image(img_id, filename, caption, owner_id=None, encrypted=0, encryption_hash=None):
             img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
             if not os.path.exists(img_path):
                 return
-            pixmap = QPixmap(img_path)
+            
+            pixmap = None
+            if encrypted:
+                # 检查是否是当前用户的图片
+                current_user_id = self.user_info.get('id') if self.user_info else None
+                if owner_id is not None and owner_id != current_user_id:
+                    # 不是当前用户的加密图片，显示占位符
+                    lbl = QLabel('🔒 加密图片（需要登录用户权限）')
+                    lbl.setStyleSheet("color: #888; padding: 20px; background: #333; border-radius: 4px;")
+                    self.page_layout.addWidget(lbl, alignment=Qt.AlignCenter)
+                    return
+                # 尝试解密
+                if self.user_password:
+                    try:
+                        key = generate_key(self.user_password)
+                        decrypted_data = decrypt_image(img_path, key)
+                        if decrypted_data:
+                            # 从解密的数据加载图片
+                            pixmap = QPixmap()
+                            pixmap.loadFromData(decrypted_data)
+                    except Exception as e:
+                        print(f"解密失败: {e}")
+                if pixmap is None or pixmap.isNull():
+                    lbl = QLabel('🔒 图片解密失败')
+                    lbl.setStyleSheet("color: #888; padding: 20px; background: #333; border-radius: 4px;")
+                    self.page_layout.addWidget(lbl, alignment=Qt.AlignCenter)
+                    return
+            else:
+                # 普通图片：优先显示带注释的预览图
+                preview_path = os.path.splitext(img_path)[0] + '.preview.png'
+                if os.path.exists(preview_path):
+                    pixmap = QPixmap(preview_path)
+                else:
+                    pixmap = QPixmap(img_path)
+            
             if pixmap.isNull():
                 return
             img_label = _ImageLabel(pixmap, img_id=img_id, img_path=img_path, max_width=400)
             img_label.double_clicked.connect(self._on_image_double_clicked)
-            self.page_layout.insertWidget(self.page_layout.count() - 1, img_label)
+            self.page_layout.addWidget(img_label, alignment=Qt.AlignCenter)
             # 图片说明
             if caption:
                 cap_lbl = QLabel(caption)
-                cap_lbl.setStyleSheet("color: #888890; font-size: 11px; margin-bottom: 8px;")
+                cap_lbl.setStyleSheet("color: #888890; font-size: 11px; margin-bottom: 8px; background: transparent;")
                 cap_lbl.setAlignment(Qt.AlignCenter)
-                self.page_layout.insertWidget(self.page_layout.count() - 1, cap_lbl)
+                self.page_layout.addWidget(cap_lbl)
 
         # 渲染页面内容
         add_heading("影像所见")
@@ -2747,43 +4239,46 @@ class DetailPanel(QWidget):
         if d.get('xray_finding'):
             add_heading("X线", 3)
             add_body(d['xray_finding'])
-            for img_id, filename, caption, mt in rows:
+            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash in rows:
                 if mt == 'xray':
-                    add_image(img_id, filename, caption)
+                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash)
 
         if d.get('ct_finding'):
             add_heading("CT", 3)
             add_body(d['ct_finding'])
-            for img_id, filename, caption, mt in rows:
+            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash in rows:
                 if mt == 'ct':
-                    add_image(img_id, filename, caption)
+                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash)
 
         if d.get('mri_finding'):
             add_heading("MRI", 3)
             add_body(d['mri_finding'])
-            for img_id, filename, caption, mt in rows:
+            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash in rows:
                 if mt == 'mri':
-                    add_image(img_id, filename, caption)
+                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash)
 
         if d.get('pet_finding'):
             add_heading("PET", 3)
             add_body(d['pet_finding'])
-            for img_id, filename, caption, mt in rows:
+            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash in rows:
                 if mt == 'pet':
-                    add_image(img_id, filename, caption)
+                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash)
 
         # 未分类的图片（media_type 为 'image' 或其他）
-        uncategorized = [(iid, fn, cap, mt) for iid, fn, cap, mt in rows
+        uncategorized = [(iid, fn, cap, mt, oid, enc, enc_hash) for iid, fn, cap, mt, oid, enc, enc_hash in rows
                          if mt not in ('xray', 'ct', 'mri', 'pet')]
         if uncategorized:
             add_heading("影像资料", 3)
-            for img_id, filename, caption, mt in uncategorized:
-                add_image(img_id, filename, caption)
+            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash in uncategorized:
+                add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash)
 
         # 底部提示
         tip = QLabel(f'共 {len(rows)} 张影像（悬停滚轮缩放，双击图片进入浏览）')
-        tip.setStyleSheet("color: #888890; font-size: 11px; margin-top: 12px;")
-        self.page_layout.insertWidget(self.page_layout.count() - 1, tip)
+        tip.setStyleSheet("color: #888890; font-size: 11px; margin-top: 12px; background: transparent;")
+        self.page_layout.addWidget(tip)
+
+        # 末尾 stretch
+        self.page_layout.addStretch()
 
     def _on_image_double_clicked(self, img_id, img_path):
         """内联图片双击：打开 ImageViewerDialog"""
@@ -2794,8 +4289,17 @@ class DetailPanel(QWidget):
             if iid == img_id and ipath == img_path:
                 current_idx = i
                 break
-        viewer = ImageViewerDialog(self._current_image_list, current_idx, self)
+        viewer = ImageViewerDialog(
+            self._current_image_list, 
+            current_idx, 
+            self,
+            user_info=self.user_info,
+            user_password=self.user_password,
+            active_db=self.active_db
+        )
         viewer.exec_()
+        # 刷新页面显示
+        self._refresh_content()
 
     def _show_medical_tab(self):
         if not self.current_disease_id:
@@ -2803,46 +4307,107 @@ class DetailPanel(QWidget):
             return
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT title, content FROM medical_records WHERE disease_id=?",
+        c.execute("SELECT id, title, content FROM medical_records WHERE disease_id=?",
                   (self.current_disease_id,))
         rows = c.fetchall()
         conn.close()
+        self._current_records = [(r[0], r[1], r[2]) for r in rows]
+        self._current_record_type = 'medical'
         if not rows:
-            self.content_browser.setHtml('<p style="color:#666;">暂无医学资料</p>')
+            self.content_browser.setHtml('<p style="color:#666;">暂无医学资料，点击"添加图文"创建</p>')
             return
         html = f'{self._html_heading("医学资料")}'
-        for title, content in rows:
-            html += f'{self._html_heading(title, 3)}{self._html_body(content)}'
+        for rid, title, content in rows:
+            html += f'''
+            <div style="margin:8px 0; padding:8px; border:1px solid #2a2a30; border-radius:4px; cursor:pointer;"
+                 onclick="this.style.borderColor='#3f7bf7'">
+                <h3 style="color:#5a91ff; margin:0 0 4px 0;">{title}</h3>
+                <div style="color:#c8c8cc; line-height:1.6;">{content}</div>
+            </div>'''
         self.content_browser.setHtml(html)
 
     def _show_anatomy_tab(self):
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT title, content FROM anatomy_records")
+        c.execute("SELECT id, title, content FROM anatomy_records")
         rows = c.fetchall()
         conn.close()
+        self._current_records = [(r[0], r[1], r[2]) for r in rows]
+        self._current_record_type = 'anatomy'
         if not rows:
-            self.content_browser.setHtml('<p style="color:#666;">暂无影像解剖图谱资料</p>')
+            self.content_browser.setHtml('<p style="color:#666;">暂无影像解剖图谱资料，点击"添加图文"创建</p>')
             return
         html = f'{self._html_heading("影像解剖图谱与资料")}'
-        for title, content in rows:
-            html += f'{self._html_heading(title, 3)}{self._html_body(content)}'
+        for rid, title, content in rows:
+            html += f'''
+            <div style="margin:8px 0; padding:8px; border:1px solid #2a2a30; border-radius:4px; cursor:pointer;"
+                 onclick="this.style.borderColor='#3f7bf7'">
+                <h3 style="color:#5a91ff; margin:0 0 4px 0;">{title}</h3>
+                <div style="color:#c8c8cc; line-height:1.6;">{content}</div>
+            </div>'''
         self.content_browser.setHtml(html)
+
+    def _add_record(self):
+        record_type = getattr(self, '_current_record_type', 'medical')
+        dlg = _RichTextEditorDialog(
+            self, record_type=record_type,
+            disease_id=self.current_disease_id,
+            active_db=self.active_db
+        )
+        dlg._new_record()  # 自动新建一条笔记
+        dlg.exec_()
+        self._refresh_content()
+
+    def _edit_record(self):
+        record_type = getattr(self, '_current_record_type', 'medical')
+        dlg = _RichTextEditorDialog(
+            self, record_type=record_type,
+            disease_id=self.current_disease_id,
+            active_db=self.active_db
+        )
+        dlg.exec_()
+        self._refresh_content()
+
+    def _delete_record(self):
+        record_type = getattr(self, '_current_record_type', 'medical')
+        # 直接使用编辑器进行删除管理
+        dlg = _RichTextEditorDialog(
+            self, record_type=record_type,
+            disease_id=self.current_disease_id,
+            active_db=self.active_db
+        )
+        dlg.exec_()
+        self._refresh_content()
 
 
 # ── 主窗口 ────────────────────────────────────────────────
 class MainWindow(QMainWindow):
-    def __init__(self, user_info, active_db):
+    def __init__(self, user_info, active_db, user_password=None):
         super().__init__()
         self.user_info = user_info
         self.active_db = active_db
+        self.user_password = user_password
         self.current_theme = '深蓝暗夜'
-        self.setWindowTitle('RadAtlas 影像图鉴助手')
+        self.setWindowTitle(f'RadAtlas {APP_VERSION} 影像图鉴助手')
         self.setMinimumSize(1000, 650)
         self.resize(1200, 750)
+        # 使用无边框窗口 + 自定义标题栏
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
 
-        # 菜单栏
-        menubar = self.menuBar()
+        # 中央容器
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, f'RadAtlas {APP_VERSION} 影像图鉴助手')
+        root_layout.addWidget(self.title_bar)
+
+        # 菜单栏（手动添加到布局中，确保在标题栏之下）
+        menubar = QMenuBar(self)
+        root_layout.addWidget(menubar)
 
         # 文件菜单
         file_menu = menubar.addMenu('文件')
@@ -2884,12 +4449,6 @@ class MainWindow(QMainWindow):
             theme_menu.addAction(action)
 
         # 中央部件
-        central = QWidget()
-        self.setCentralWidget(central)
-        root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-
         # 顶部搜索栏
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(12, 8, 12, 8)
@@ -2974,7 +4533,7 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(4, 8, 8, 8)
 
-        self.detail = DetailPanel()
+        self.detail = DetailPanel(user_info=self.user_info, user_password=self.user_password)
         right_layout.addWidget(self.detail)
 
         splitter.addWidget(right_panel)
@@ -2986,11 +4545,13 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(splitter, stretch=1)
 
         # 状态栏
-        self.statusBar().showMessage('就绪')
+        self.statusBar().showMessage(f'就绪  |  {APP_AUTHOR}  |  {APP_VERSION}')
 
         # 加载疾病列表
         self.load_disease_list()
         self._update_completer()
+        # 初始化标题栏主题
+        self.title_bar.update_theme(THEMES[self.current_theme])
 
     # ── 主题切换 ──
     def switch_theme(self, theme_name):
@@ -2998,6 +4559,16 @@ class MainWindow(QMainWindow):
             return
         self.current_theme = theme_name
         t = THEMES[theme_name]
+        # 淡入过渡动画
+        if not hasattr(self, '_theme_anim'):
+            self._theme_opacity = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(self._theme_opacity)
+            self._theme_anim = QPropertyAnimation(self._theme_opacity, b"opacity")
+        self._theme_anim.stop()
+        self._theme_anim.setDuration(300)
+        self._theme_anim.setStartValue(0.6)
+        self._theme_anim.setEndValue(1.0)
+        self._theme_anim.setEasingCurve(QEasingCurve.InOutCubic)
         QApplication.instance().setStyleSheet(build_stylesheet(t))
         # 更新调色板
         palette = QPalette()
@@ -3013,6 +4584,10 @@ class MainWindow(QMainWindow):
             palette.setColor(QPalette.Base, QColor(t['bg2'].lstrip('#')))
             palette.setColor(QPalette.Text, QColor(t['fg'].lstrip('#')))
         QApplication.instance().setPalette(palette)
+        # 更新自定义标题栏
+        if hasattr(self, 'title_bar'):
+            self.title_bar.update_theme(t)
+        self._theme_anim.start()
         self.statusBar().showMessage(f'已切换主题: {theme_name}')
 
     # ── 搜索自动补全 ──
@@ -3024,18 +4599,63 @@ class MainWindow(QMainWindow):
         conn.close()
         names = []
         for cn, en in rows:
-            if cn:
+            if cn and en:
+                names.append(f'{cn} ({en})')
+            elif cn:
                 names.append(cn)
-            if en:
+            elif en:
                 names.append(en)
         self.completer_model.setStringList(names)
+        # 设置补全弹出列表样式：14px楷体灰蓝色斜体，背景透明
+        self.completer.popup().setStyleSheet("""
+            QListView {
+                background-color: transparent;
+                border: 1px solid #3a3e55;
+                border-radius: 6px;
+                padding: 4px;
+                font-family: KaiTi;
+                font-style: italic;
+                color: #8899bb;
+                font-size: 14px;
+                outline: none;
+            }
+            QListView::item {
+                padding: 5px 10px;
+                border-radius: 4px;
+                background-color: rgba(20, 22, 36, 180);
+            }
+            QListView::item:selected {
+                background-color: #3f7bf7;
+                color: #ffffff;
+                font-style: italic;
+            }
+            QListView::item:hover {
+                background-color: rgba(42, 46, 69, 200);
+            }
+        """)
+        # 补全弹出淡入动画（延长到500ms）
+        self._completer_anim = QPropertyAnimation(self.completer.popup(), b"windowOpacity")
+        self._completer_anim.setDuration(500)
+        self._completer_anim.setStartValue(0.0)
+        self._completer_anim.setEndValue(1.0)
+        self._completer_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
     def on_search_text_changed(self, text):
-        pass  # completer 自动处理
+        # 补全弹出时播放淡入动画
+        if text and self.completer_model.stringList():
+            try:
+                self._completer_anim.start()
+            except Exception:
+                pass
 
     def on_completer_activated(self, text):
-        self.search_input.setText(text)
+        # 从 "中文名(英文名)" 格式中提取中文名用于搜索
+        search_text = text.split('(')[0].strip() if '(' in text else text
+        self.search_input.setText(search_text)
         self.do_search()
+        # 自动选中第一个匹配的疾病条目
+        if self.disease_list.count() > 0:
+            self.disease_list.setCurrentRow(0)
 
     # ── 疾病列表 ──
     def load_disease_list(self, search=None):
@@ -3206,7 +4826,7 @@ class MainWindow(QMainWindow):
     def clear_search(self):
         self.search_input.clear()
         self.load_disease_list()
-        self.statusBar().showMessage('就绪')
+        self.statusBar().showMessage(f'就绪  |  {APP_AUTHOR}  |  {APP_VERSION}')
 
     def do_logout(self):
         self.close()
@@ -3247,6 +4867,7 @@ class RadAtlasApp:
             return
 
         user_info = login.user_info
+        user_password = login.user_password
         active_db = user_info.get('database') or DATABASE
         try:
             init_db(active_db)
@@ -3262,7 +4883,7 @@ class RadAtlasApp:
             return
 
         try:
-            window = MainWindow(user_info, active_db)
+            window = MainWindow(user_info, active_db, user_password)
             window.show()
         except Exception as e:
             QMessageBox.critical(None, '错误', f'创建主窗口失败:\n{e}')

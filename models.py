@@ -2,10 +2,144 @@ import sqlite3
 import json
 import hashlib
 import os
+import uuid
+import base64
+
+# 尝试导入 cryptography，不可用时使用备用方案
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE = os.path.join(APP_DIR, 'radatlas.db')
 USER_DB = os.path.join(APP_DIR, 'users.db')
+
+# 加密盐值（用于密钥派生）
+ENCRYPTION_SALT = b'radatlas_encryption_salt_2024'
+
+
+def generate_key(password):
+    """根据用户密码生成加密密钥"""
+    if HAS_CRYPTOGRAPHY:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=ENCRYPTION_SALT,
+            iterations=100000,
+            backend=default_backend()
+        )
+        key = kdf.derive(password.encode('utf-8'))
+        return base64.urlsafe_b64encode(key)
+    else:
+        # 备用方案：使用 SHA256 哈希
+        key = hashlib.sha256(ENCRYPTION_SALT + password.encode('utf-8')).digest()
+        return base64.urlsafe_b64encode(key)
+
+
+def generate_unique_filename(original_name):
+    """生成唯一的加密文件名"""
+    ext = os.path.splitext(original_name)[1]
+    unique_name = str(uuid.uuid4())[:16] + ext
+    return unique_name
+
+
+def _xor_encrypt(data, key):
+    """简单的 XOR 加密（备用方案，当 cryptography 不可用时使用）"""
+    key_bytes = key if isinstance(key, bytes) else key.encode('utf-8')
+    result = bytearray(len(data))
+    key_len = len(key_bytes)
+    for i in range(len(data)):
+        result[i] = data[i] ^ key_bytes[i % key_len]
+    return bytes(result)
+
+
+def encrypt_filename(filename, key):
+    """加密文件名"""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        encrypted = fernet.encrypt(filename.encode('utf-8'))
+        return base64.urlsafe_b64encode(encrypted).decode('utf-8')[:64]
+    else:
+        encrypted = _xor_encrypt(filename.encode('utf-8'), key)
+        return base64.urlsafe_b64encode(encrypted).decode('utf-8')[:64]
+
+
+def decrypt_filename(encrypted_name, key):
+    """解密文件名"""
+    try:
+        data = base64.urlsafe_b64decode(encrypted_name)
+        if HAS_CRYPTOGRAPHY:
+            fernet = Fernet(key)
+            return fernet.decrypt(data).decode('utf-8')
+        else:
+            return _xor_encrypt(data, key).decode('utf-8')
+    except Exception:
+        return None
+
+
+def encrypt_image(image_path, key):
+    """加密图片文件"""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        with open(image_path, 'rb') as f:
+            data = f.read()
+        encrypted_data = fernet.encrypt(data)
+        with open(image_path, 'wb') as f:
+            f.write(encrypted_data)
+    else:
+        with open(image_path, 'rb') as f:
+            data = f.read()
+        encrypted_data = _xor_encrypt(data, key)
+        with open(image_path, 'wb') as f:
+            f.write(encrypted_data)
+
+
+def decrypt_image(image_path, key):
+    """解密图片文件"""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        with open(image_path, 'rb') as f:
+            encrypted_data = f.read()
+        try:
+            decrypted_data = fernet.decrypt(encrypted_data)
+            return decrypted_data
+        except Exception:
+            return None
+    else:
+        with open(image_path, 'rb') as f:
+            encrypted_data = f.read()
+        try:
+            decrypted_data = _xor_encrypt(encrypted_data, key)
+            return decrypted_data
+        except Exception:
+            return None
+
+
+def encrypt_image_to_bytes(image_path, key):
+    """加密图片并返回加密后的字节数据"""
+    with open(image_path, 'rb') as f:
+        data = f.read()
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        return fernet.encrypt(data)
+    else:
+        return _xor_encrypt(data, key)
+
+
+def decrypt_bytes_to_image(encrypted_data, key, output_path):
+    """解密字节数据并保存为图片文件"""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        decrypted_data = fernet.decrypt(encrypted_data)
+    else:
+        decrypted_data = _xor_encrypt(encrypted_data, key)
+    with open(output_path, 'wb') as f:
+        f.write(decrypted_data)
 
 
 def hash_password(password):
@@ -130,7 +264,8 @@ def init_db(db_path=None):
     c.execute('''CREATE TABLE IF NOT EXISTS images
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   disease_id INTEGER, filename TEXT, image_type TEXT,
-                  caption TEXT, source TEXT, media_type TEXT, annotations TEXT)''')
+                  caption TEXT, source TEXT, media_type TEXT, annotations TEXT,
+                  owner_id INTEGER, encrypted INTEGER DEFAULT 0, encryption_hash TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS medical_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   disease_id INTEGER, title TEXT, content TEXT,
@@ -145,6 +280,18 @@ def init_db(db_path=None):
         pass
     try:
         c.execute("ALTER TABLE images ADD COLUMN annotations TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN owner_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN encrypted INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN encryption_hash TEXT")
     except sqlite3.OperationalError:
         pass
     c.execute("UPDATE images SET media_type = 'image' WHERE media_type IS NULL")
@@ -313,17 +460,105 @@ def delete_disease(db_path, disease_id):
     conn.close()
 
 
-def add_image(db_path, disease_id, filename, image_type, caption, source, media_type):
+def add_image(db_path, disease_id, filename, image_type, caption, source, media_type, 
+              owner_id=None, encrypted=False, encryption_hash=None, original_filename=None):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute('''INSERT INTO images
-                 (disease_id, filename, image_type, caption, source, media_type)
-                 VALUES (?,?,?,?,?,?)''',
-              (disease_id, filename, image_type, caption, source, media_type))
+                 (disease_id, filename, image_type, caption, source, media_type,
+                  owner_id, encrypted, encryption_hash, original_filename)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)''',
+              (disease_id, filename, image_type, caption, source, media_type,
+               owner_id, 1 if encrypted else 0, encryption_hash, original_filename))
     image_id = c.lastrowid
     conn.commit()
     conn.close()
     return image_id
+
+
+def init_db(db_path=None):
+    if db_path is None:
+        db_path = DATABASE
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS diseases
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name_cn TEXT, name_en TEXT, system TEXT, category TEXT,
+                  clinical TEXT, diagnosis TEXT,
+                  primary_img TEXT, secondary_img TEXT,
+                  xray_finding TEXT, ct_finding TEXT, mri_finding TEXT, pet_finding TEXT,
+                  report_template TEXT, differential_diagnosis TEXT, treatment TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS images
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  disease_id INTEGER, filename TEXT, image_type TEXT,
+                  caption TEXT, source TEXT, media_type TEXT, annotations TEXT,
+                  owner_id INTEGER, encrypted INTEGER DEFAULT 0, 
+                  encryption_hash TEXT, original_filename TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS medical_records
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  disease_id INTEGER, title TEXT, content TEXT,
+                  image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS anatomy_records
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  title TEXT, content TEXT,
+                  image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN media_type TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN annotations TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN owner_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN encrypted INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN encryption_hash TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN original_filename TEXT")
+    except sqlite3.OperationalError:
+        pass
+    c.execute("UPDATE images SET media_type = 'image' WHERE media_type IS NULL")
+    conn.commit()
+    conn.close()
+
+
+def get_image_by_id(db_path, image_id):
+    """获取图片信息"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('''SELECT id, disease_id, filename, image_type, caption, source, 
+                 media_type, owner_id, encrypted, encryption_hash, original_filename 
+                 FROM images WHERE id=?''', (image_id,))
+    row = c.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {
+        'id': row[0], 'disease_id': row[1], 'filename': row[2], 
+        'image_type': row[3], 'caption': row[4], 'source': row[5],
+        'media_type': row[6], 'owner_id': row[7], 
+        'encrypted': bool(row[8]), 'encryption_hash': row[9],
+        'original_filename': row[10]
+    }
+
+
+def update_image_encryption(db_path, image_id, encrypted, encryption_hash=None):
+    """更新图片加密状态"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('''UPDATE images SET encrypted=?, encryption_hash=? WHERE id=?''', 
+              (1 if encrypted else 0, encryption_hash, image_id))
+    conn.commit()
+    conn.close()
 
 
 def delete_image(db_path, image_id):
