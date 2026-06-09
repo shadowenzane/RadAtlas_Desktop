@@ -1380,7 +1380,7 @@ class _ToolButton(QWidget):
     def __init__(self, tool_id, parent=None):
         super().__init__(parent)
         self.tool_id = tool_id
-        self.setFixedSize(40, 40)
+        self.setFixedSize(36, 36)
         self._hover = False
         self._selected = False
         self.setCursor(Qt.PointingHandCursor)
@@ -1396,75 +1396,80 @@ class _ToolButton(QWidget):
         # 背景
         if self._selected:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(63, 123, 247, 100))
+            painter.setBrush(QColor(63, 123, 247, 50))
             painter.drawRoundedRect(r.adjusted(2, 2, -2, -2), 6, 6)
             painter.setBrush(Qt.NoBrush)
         elif self._hover:
             painter.fillRect(r, QColor(255, 255, 255, 30))
         # 绘制图标
-        painter.setPen(QPen(QColor(220, 220, 225), 2.5))
+        fg = QColor(190, 195, 200)
+        painter.setPen(QPen(fg, 1.5))
         cx, cy = r.center().x(), r.center().y()
         tid = self.tool_id
         if tid == 'select':
-            # 光标箭头
-            pts = [QPoint(cx - 6, cy - 8), QPoint(cx - 6, cy + 6),
-                   QPoint(cx - 2, cy + 2), QPoint(cx + 2, cy + 8),
-                   QPoint(cx + 4, cy + 6), QPoint(cx, cy + 0),
-                   QPoint(cx + 6, cy + 0)]
+            # 光标箭头 - 更精致
+            painter.setPen(QPen(fg, 1.3))
+            pts = [QPoint(cx - 4, cy - 7), QPoint(cx - 4, cy + 4),
+                   QPoint(cx - 1, cy + 1), QPoint(cx + 1, cy + 6),
+                   QPoint(cx + 3, cy + 4), QPoint(cx + 1, cy),
+                   QPoint(cx + 5, cy)]
             painter.drawPolyline(QPolygon(pts))
         elif tid == 'pan':
-            # 手掌图标 - 简洁五指张开
-            fg = QColor(220, 220, 225)
-            painter.setPen(QPen(fg, 2, Qt.SolidLine, Qt.RoundCap))
-            # 手掌主体（圆角矩形）
-            painter.drawRoundedRect(cx - 5, cy + 1, 10, 7, 2, 2)
-            # 五根手指
-            painter.drawLine(cx - 4, cy + 1, cx - 5, cy - 5)  # 小指
-            painter.drawLine(cx - 2, cy + 1, cx - 2, cy - 7)  # 无名指
-            painter.drawLine(cx, cy + 1, cx, cy - 8)           # 中指
-            painter.drawLine(cx + 2, cy + 1, cx + 2, cy - 7)  # 食指
-            painter.drawLine(cx + 4, cy + 1, cx + 6, cy - 4)  # 拇指
+            # 四向移动图标
+            painter.setPen(QPen(fg, 1.3, Qt.SolidLine, Qt.SolidCap, Qt.RoundJoin))
+            # 十字线
+            painter.drawLine(cx, cy - 7, cx, cy + 7)
+            painter.drawLine(cx - 7, cy, cx + 7, cy)
+            # 四个箭头
+            for dx, dy in [(0, -7), (0, 7), (-7, 0), (7, 0)]:
+                ax, ay = cx + dx, cy + dy
+                if dx == 0:  # 上下箭头
+                    s = 1 if dy < 0 else -1
+                    painter.drawLine(ax, ay, ax - 2, ay + s * 3)
+                    painter.drawLine(ax, ay, ax + 2, ay + s * 3)
+                else:  # 左右箭头
+                    s = 1 if dx < 0 else -1
+                    painter.drawLine(ax, ay, ax + s * 3, ay - 2)
+                    painter.drawLine(ax, ay, ax + s * 3, ay + 2)
         elif tid == 'text':
-            painter.setFont(QFont("SimSun", 14, QFont.Bold))
+            painter.setFont(QFont("SimSun", 12, QFont.Bold))
+            painter.setPen(QPen(fg, 1))
             painter.drawText(r.adjusted(0, 0, 0, -4), Qt.AlignCenter, 'T')
-            # 文本光标线
-            painter.setPen(QPen(QColor(220, 220, 225), 1.5))
-            painter.drawLine(cx, cy + 4, cx, cy + 10)
+            painter.setPen(QPen(fg, 1))
+            painter.drawLine(cx, cy + 3, cx, cy + 8)
         elif tid == 'arrow':
-            painter.drawLine(cx - 7, cy + 7, cx + 5, cy - 5)
-            pts = [QPoint(cx + 5, cy - 5), QPoint(cx + 1, cy - 3), QPoint(cx + 3, cy - 1)]
-            painter.setBrush(QColor(220, 220, 225))
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawLine(cx - 6, cy + 6, cx + 5, cy - 5)
+            pts = [QPoint(cx + 5, cy - 5), QPoint(cx + 1, cy - 2), QPoint(cx + 3, cy - 0)]
+            painter.setBrush(fg)
             painter.drawPolygon(QPolygon(pts))
             painter.setBrush(Qt.NoBrush)
         elif tid == 'line':
-            painter.drawLine(cx - 8, cy + 8, cx + 8, cy - 8)
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawLine(cx - 7, cy + 7, cx + 7, cy - 7)
         elif tid == 'rect':
-            painter.drawRect(cx - 8, cy - 6, 16, 12)
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawRect(cx - 7, cy - 5, 14, 10)
         elif tid == 'circle':
-            painter.drawEllipse(cx - 7, cy - 7, 14, 14)
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawEllipse(cx - 6, cy - 6, 12, 12)
         elif tid == 'measure':
-            # 测量尺图标 - 倾斜的尺子
-            fg = QColor(220, 220, 225)
-            painter.setPen(QPen(fg, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            # 尺身（倾斜矩形）
-            pts = [QPoint(cx - 9, cy + 3), QPoint(cx - 5, cy - 5),
-                   QPoint(cx + 9, cy - 3), QPoint(cx + 5, cy + 5)]
-            painter.drawPolygon(QPolygon(pts))
-            # 刻度线
-            painter.setPen(QPen(fg, 1.5))
-            for i in range(4):
-                t = 0.2 + i * 0.2
-                tx = int(cx - 9 + t * 18)
-                ty = int(cy + 3 + t * (-8))
-                painter.drawLine(tx, ty, tx + 1, ty - 3)
+            painter.setPen(QPen(fg, 1.3))
+            # 水平线+两端竖线
+            painter.drawLine(cx - 7, cy, cx + 7, cy)
+            painter.drawLine(cx - 7, cy - 3, cx - 7, cy + 3)
+            painter.drawLine(cx + 7, cy - 3, cx + 7, cy + 3)
+            # 中间刻度
+            for i in range(3):
+                tx = cx - 3 + i * 3
+                h = 2 if i == 1 else 1
+                painter.drawLine(tx, cy - h, tx, cy + h)
         elif tid == 'eraser':
-            # 橡皮擦图标 - 倾斜矩形带斜顶
-            pts = [QPoint(cx - 7, cy + 6), QPoint(cx - 7, cy - 1),
-                   QPoint(cx - 3, cy - 7), QPoint(cx + 7, cy - 7),
-                   QPoint(cx + 7, cy + 6)]
-            painter.drawPolygon(QPolygon(pts))
-            # 分隔线（橡皮擦套）
-            painter.drawLine(cx - 7, cy + 1, cx + 7, cy + 1)
+            painter.setPen(QPen(fg, 1.3))
+            # 简洁橡皮擦 - 圆角矩形
+            painter.drawRoundedRect(cx - 6, cy - 4, 12, 8, 2, 2)
+            # 分隔线
+            painter.drawLine(cx - 6, cy - 1, cx + 6, cy - 1)
         painter.end()
 
     def enterEvent(self, event):
@@ -1505,46 +1510,38 @@ class _ActionBtn(QWidget):
         painter.drawRoundedRect(r.adjusted(1, 1, -1, -1), 4, 4)
         painter.setBrush(Qt.NoBrush)
         # 绘制图标
-        painter.setPen(QPen(QColor(210, 210, 215), 1.8))
+        fg = QColor(190, 195, 200)
+        painter.setPen(QPen(fg, 1.3))
         cx, cy = r.center().x(), r.center().y()
         aid = self.action_id
         if aid == 'undo':
-            # 逆时针弯曲箭头
-            painter.drawArc(cx - 6, cy - 6, 12, 12, 30 * 16, 300 * 16)
-            # 箭头头部
-            pts = [QPoint(cx - 5, cy - 4), QPoint(cx - 5, cy - 8), QPoint(cx - 1, cy - 4)]
-            painter.setBrush(QColor(210, 210, 215))
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawArc(cx - 5, cy - 4, 10, 10, 30 * 16, 300 * 16)
+            pts = [QPoint(cx - 4, cy - 3), QPoint(cx - 4, cy - 7), QPoint(cx - 1, cy - 3)]
+            painter.setBrush(fg)
             painter.drawPolygon(QPolygon(pts))
             painter.setBrush(Qt.NoBrush)
         elif aid == 'clear':
-            # 垃圾桶图标
-            # 桶身
-            painter.drawRect(cx - 5, cy - 2, 10, 8)
-            # 桶盖
-            painter.drawLine(cx - 6, cy - 2, cx + 6, cy - 2)
-            painter.drawLine(cx - 3, cy - 4, cx + 3, cy - 4)
-            painter.drawLine(cx, cy - 6, cx, cy - 4)
-            # 桶内竖线
-            painter.drawLine(cx - 2, cy, cx - 2, cy + 4)
-            painter.drawLine(cx + 2, cy, cx + 2, cy + 4)
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawRect(cx - 4, cy - 1, 8, 7)
+            painter.drawLine(cx - 5, cy - 1, cx + 5, cy - 1)
+            painter.drawLine(cx - 2, cy - 3, cx + 2, cy - 3)
+            painter.drawLine(cx - 2, cy + 1, cx - 2, cy + 5)
+            painter.drawLine(cx + 2, cy + 1, cx + 2, cy + 5)
         elif aid == 'save':
-            # 软盘图标
-            painter.drawRect(cx - 6, cy - 6, 12, 12)
-            # 顶部小矩形（标签区）
+            painter.setPen(QPen(fg, 1.3))
+            painter.drawRect(cx - 5, cy - 5, 10, 10)
             painter.setBrush(QColor(60, 60, 65))
-            painter.drawRect(cx - 3, cy - 6, 6, 5)
+            painter.drawRect(cx - 3, cy - 5, 6, 4)
             painter.setBrush(Qt.NoBrush)
-            # 底部小矩形（窗口区）
-            painter.drawRect(cx - 4, cy + 1, 8, 5)
+            painter.drawRect(cx - 3, cy + 1, 6, 4)
         elif aid == 'back':
-            # 左箭头 + 门/出口形状
-            # 门框
-            painter.drawRect(cx - 5, cy - 6, 10, 12)
-            # 左箭头
-            pts = [QPoint(cx + 2, cy - 3), QPoint(cx - 2, cy), QPoint(cx + 2, cy + 3)]
-            painter.setBrush(QColor(210, 210, 215))
+            painter.setPen(QPen(fg, 1.3))
+            pts = [QPoint(cx + 3, cy - 4), QPoint(cx - 3, cy), QPoint(cx + 3, cy + 4)]
+            painter.setBrush(fg)
             painter.drawPolygon(QPolygon(pts))
             painter.setBrush(Qt.NoBrush)
+            painter.drawLine(cx + 5, cy - 5, cx + 5, cy + 5)
         painter.end()
 
     def enterEvent(self, event):
@@ -1583,7 +1580,7 @@ class _FloatingToolbar(QWidget):
         self._drag_pos = None
         self.zoom_pct = 100
 
-        self.setFixedWidth(56)
+        self.setFixedWidth(48)
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setAutoFillBackground(False)
         self.setCursor(Qt.ArrowCursor)
@@ -1703,7 +1700,7 @@ class _FloatingToolbar(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QColor(30, 30, 35, 230))
+        painter.setBrush(QColor(30, 30, 35, 220))
         painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
         painter.end()
@@ -5584,6 +5581,28 @@ class MainWindow(QMainWindow):
         fmt_combo.addItems(['Word 文档 (.docx)', 'PDF 文档 (.pdf)'])
         fmt_combo.setFixedHeight(30)
         flayout.addWidget(fmt_combo)
+
+        # 加密选项
+        encrypt_check = QCheckBox('加密导出文件')
+        encrypt_check.setStyleSheet("color: #c8c8cc; padding: 4px 8px;")
+        flayout.addWidget(encrypt_check)
+
+        pwd_widget = QWidget()
+        pwd_layout = QHBoxLayout(pwd_widget)
+        pwd_layout.setContentsMargins(8, 0, 8, 0)
+        pwd_label = QLabel('密码：')
+        pwd_label.setStyleSheet("color: #aaa;")
+        pwd_layout.addWidget(pwd_label)
+        pwd_input = QLineEdit()
+        pwd_input.setEchoMode(QLineEdit.Password)
+        pwd_input.setPlaceholderText('输入加密密码')
+        pwd_input.setFixedHeight(28)
+        pwd_layout.addWidget(pwd_input)
+        pwd_widget.setVisible(False)
+        flayout.addWidget(pwd_widget)
+
+        encrypt_check.toggled.connect(pwd_widget.setVisible)
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_cancel2 = QPushButton('取消')
@@ -5622,6 +5641,22 @@ class MainWindow(QMainWindow):
                 self._export_to_docx(all_data, save_path)
             else:
                 self._export_to_pdf(all_data, save_path)
+
+            # 加密导出文件
+            if encrypt_check.isChecked() and pwd_input.text().strip():
+                try:
+                    enc_key = generate_key(pwd_input.text().strip())
+                    with open(save_path, 'rb') as f:
+                        file_data = f.read()
+                    encrypted_data = encrypt_data(file_data, enc_key)
+                    enc_path = save_path + '.enc'
+                    with open(enc_path, 'wb') as f:
+                        f.write(encrypted_data)
+                    os.remove(save_path)
+                    save_path = enc_path
+                except Exception as enc_err:
+                    QMessageBox.warning(self, '加密失败', f'文件已导出但加密失败：{enc_err}')
+
             QMessageBox.information(self, '导出成功', f'已导出到：{save_path}')
             # 清理临时文件
             for d in all_data:
