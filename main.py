@@ -5624,10 +5624,24 @@ class MainWindow(QMainWindow):
             return
         fmt = 'docx' if fmt_combo.currentIndex() == 0 else 'pdf'
         # 选择保存路径
+        username = self.user_info.get('username', '') if self.user_info else ''
         if len(disease_ids) == 1:
-            default_name = f'疾病导出_{datetime.now().strftime("%Y%m%d")}.{fmt}'
+            # 获取疾病名称
+            disease_name = ''
+            try:
+                conn = sqlite3.connect(self.active_db)
+                c = conn.cursor()
+                c.execute("SELECT name_cn, name_en FROM diseases WHERE id=?", (disease_ids[0],))
+                row = c.fetchone()
+                conn.close()
+                if row:
+                    disease_name = row[0] or row[1] or ''
+            except Exception:
+                pass
+            name_part = f'{disease_name}_{username}' if disease_name else f'疾病导出_{username}'
+            default_name = f'{name_part}_{datetime.now().strftime("%Y%m%d")}.{fmt}'
         else:
-            default_name = f'批量导出_{datetime.now().strftime("%Y%m%d")}.{fmt}'
+            default_name = f'批量导出_{username}_{datetime.now().strftime("%Y%m%d")}.{fmt}'
         ext_filter = f'Word 文档 (*.{fmt})' if fmt == 'docx' else f'PDF 文档 (*.{fmt})'
         save_path, _ = QFileDialog.getSaveFileName(self, '保存导出文件', default_name, ext_filter)
         if not save_path:
