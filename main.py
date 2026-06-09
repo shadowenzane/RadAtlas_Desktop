@@ -1416,7 +1416,7 @@ class _ToolButton(QWidget):
             painter.drawPolyline(QPolygon(pts))
         elif tid == 'pan':
             # 四向移动图标
-            painter.setPen(QPen(fg, 1.3, Qt.SolidLine, Qt.SolidCap, Qt.RoundJoin))
+            painter.setPen(QPen(fg, 1.3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             # 十字线
             painter.drawLine(cx, cy - 7, cx, cy + 7)
             painter.drawLine(cx - 7, cy, cx + 7, cy)
