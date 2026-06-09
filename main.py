@@ -2533,6 +2533,12 @@ class ImageEditorDialog(QDialog):
         """触发自动保存（延迟1秒）"""
         self._auto_save_timer.start(1000)
 
+    def closeEvent(self, event):
+        """关闭前保存注释"""
+        self._auto_save_timer.stop()
+        self.canvas.save_annotated(self.image_path)
+        super().closeEvent(event)
+
     def _save(self):
         self.canvas.save_annotated(self.image_path)
         self.image_updated.emit(self.image_path)
