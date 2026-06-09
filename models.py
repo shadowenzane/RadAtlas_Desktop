@@ -461,15 +461,15 @@ def delete_disease(db_path, disease_id):
 
 
 def add_image(db_path, disease_id, filename, image_type, caption, source, media_type, 
-              owner_id=None, encrypted=False, encryption_hash=None, original_filename=None):
+              owner_id=None, encrypted=False, encryption_hash=None, original_filename=None, image_data=None):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute('''INSERT INTO images
                  (disease_id, filename, image_type, caption, source, media_type,
-                  owner_id, encrypted, encryption_hash, original_filename)
-                 VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                  owner_id, encrypted, encryption_hash, original_filename, image_data)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
               (disease_id, filename, image_type, caption, source, media_type,
-               owner_id, 1 if encrypted else 0, encryption_hash, original_filename))
+               owner_id, 1 if encrypted else 0, encryption_hash, original_filename, image_data))
     image_id = c.lastrowid
     conn.commit()
     conn.close()
@@ -524,6 +524,14 @@ def init_db(db_path=None):
         pass
     try:
         c.execute("ALTER TABLE images ADD COLUMN original_filename TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN image_data BLOB")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE images ADD COLUMN annotations_encrypted TEXT")
     except sqlite3.OperationalError:
         pass
     c.execute("UPDATE images SET media_type = 'image' WHERE media_type IS NULL")
@@ -600,3 +608,146 @@ def search_diseases(db_path, keyword):
     rows = c.fetchall()
     conn.close()
     return rows
+
+
+def encrypt_data(data_bytes, key):
+    """Encrypt bytes using the given key. Returns encrypted bytes."""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        return fernet.encrypt(data_bytes)
+    else:
+        return _xor_encrypt(data_bytes, key)
+
+
+def decrypt_data(encrypted_bytes, key):
+    """Decrypt bytes using the given key. Returns decrypted bytes or None."""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        try:
+            return fernet.decrypt(encrypted_bytes)
+        except Exception:
+            return None
+    else:
+        try:
+            return _xor_encrypt(encrypted_bytes, key)
+        except Exception:
+            return None
+
+
+def encrypt_text(text, key):
+    """Encrypt a text string, return base64 encoded string."""
+    if HAS_CRYPTOGRAPHY:
+        fernet = Fernet(key)
+        encrypted = fernet.encrypt(text.encode('utf-8'))
+        return base64.urlsafe_b64encode(encrypted).decode('utf-8')
+    else:
+        encrypted = _xor_encrypt(text.encode('utf-8'), key)
+        return base64.urlsafe_b64encode(encrypted).decode('utf-8')
+
+
+def decrypt_text(encrypted_text, key):
+    """Decrypt a base64 encoded encrypted text string."""
+    try:
+        data = base64.urlsafe_b64decode(encrypted_text)
+        if HAS_CRYPTOGRAPHY:
+            fernet = Fernet(key)
+            return fernet.decrypt(data).decode('utf-8')
+        else:
+            return _xor_encrypt(data, key).decode('utf-8')
+    except Exception:
+        return None
+
+
+def store_image_encrypted(db_path, image_id, image_path, key):
+    """Read image file, encrypt it, and store in database BLOB."""
+    with open(image_path, 'rb') as f:
+        data = f.read()
+    encrypted = encrypt_data(data, key)
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("UPDATE images SET image_data=?, encrypted=1 WHERE id=?", (encrypted, image_id))
+    conn.commit()
+    conn.close()
+
+
+def load_image_decrypted(db_path, image_id, key):
+    """Load and decrypt image data from database. Returns bytes or None."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT image_data, encrypted FROM images WHERE id=?", (image_id,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        if row[1]:  # encrypted
+            return decrypt_data(row[0], key)
+        else:
+            return row[0]  # not encrypted, return raw
+    return None
+
+
+def store_annotations_encrypted(db_path, image_id, annotations_json_str, key):
+    """Encrypt annotations JSON and store in database."""
+    encrypted = encrypt_text(annotations_json_str, key)
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("UPDATE images SET annotations_encrypted=? WHERE id=?", (encrypted, image_id))
+    conn.commit()
+    conn.close()
+
+
+def load_annotations_decrypted(db_path, image_id, key):
+    """Load and decrypt annotations from database. Returns JSON string or None."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT annotations_encrypted FROM images WHERE id=?", (image_id,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        return decrypt_text(row[0], key)
+    return None
+
+
+def migrate_images_to_db(db_path, key):
+    """Migrate existing image files to encrypted database BLOBs.
+    Reads each image from disk, encrypts it, stores in DB, then deletes the file."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT id, filename FROM images WHERE image_data IS NULL AND filename IS NOT NULL")
+    rows = c.fetchall()
+    conn.close()
+
+    migrated = 0
+    for img_id, filename in rows:
+        img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
+        if img_path and os.path.exists(img_path):
+            try:
+                with open(img_path, 'rb') as f:
+                    data = f.read()
+                encrypted = encrypt_data(data, key)
+                conn = sqlite3.connect(db_path)
+                c = conn.cursor()
+                c.execute("UPDATE images SET image_data=?, encrypted=1 WHERE id=?", (encrypted, img_id))
+                conn.commit()
+                conn.close()
+                # Also migrate annotations JSON file if exists
+                json_path = os.path.splitext(img_path)[0] + '.annotations.json'
+                if os.path.exists(json_path):
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        annot_str = f.read()
+                    enc_annot = encrypt_text(annot_str, key)
+                    conn = sqlite3.connect(db_path)
+                    c = conn.cursor()
+                    c.execute("UPDATE images SET annotations_encrypted=? WHERE id=?", (enc_annot, img_id))
+                    conn.commit()
+                    conn.close()
+                    os.remove(json_path)
+                # Delete the original image file after successful migration
+                os.remove(img_path)
+                # Also delete preview file if exists
+                preview_path = os.path.splitext(img_path)[0] + '.preview.png'
+                if os.path.exists(preview_path):
+                    os.remove(preview_path)
+                migrated += 1
+            except Exception as e:
+                print(f"Migration failed for image {img_id}: {e}")
+    return migrated
