@@ -1675,7 +1675,7 @@ class _FloatingToolbar(QWidget):
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip(tooltip)
         btn.setStyleSheet("background-color: #555; color: #ddd; border: 1px solid #666; border-radius: 3px;")
-        btn.clicked.connect(lambda: self.action_triggered.emit(action))
+        btn.clicked.connect(lambda checked, a=action: self.action_triggered.emit(a))
         return btn
 
     def _on_tool(self, tid):
