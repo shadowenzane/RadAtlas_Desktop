@@ -4652,8 +4652,10 @@ class DetailPanel(QWidget):
         tab_bar.setSpacing(0)
 
         self.tab_buttons = []
-        self.tab_detach_btns = []
+        self.tab_pin_btns = []
         self._detached_windows = {}
+        self._tab_drag_idx = None
+        self._tab_drag_start = None
         tab_names = ['临床与诊断', '影像所见及标准报告参考', '影像相关病例', '医学资料', '影像解剖图谱与资料']
         for i, name in enumerate(tab_names):
             # 标签按钮容器
@@ -4661,6 +4663,20 @@ class DetailPanel(QWidget):
             tab_item_layout = QHBoxLayout(tab_item)
             tab_item_layout.setContentsMargins(0, 0, 0, 0)
             tab_item_layout.setSpacing(0)
+            # 图钉按钮（单击独立显示）
+            pin_btn = QPushButton('📌')
+            pin_btn.setFixedSize(20, 28)
+            pin_btn.setFont(QFont("Segoe UI Emoji", 8))
+            pin_btn.setCursor(Qt.PointingHandCursor)
+            pin_btn.setToolTip('独立显示此标签页')
+            pin_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; color: #666670; border-radius: 3px; }
+                QPushButton:hover { background: rgba(255,255,255,20); color: #c8c8cc; }
+            """)
+            pin_btn.clicked.connect(lambda checked, idx=i: self._detach_tab(idx))
+            self.tab_pin_btns.append(pin_btn)
+            tab_item_layout.addWidget(pin_btn)
+            # 标签按钮（支持拖动脱离）
             btn = QPushButton(name)
             btn.setObjectName('tabBtn')
             btn.setProperty('active', i == 0)
@@ -4668,19 +4684,6 @@ class DetailPanel(QWidget):
             btn.clicked.connect(lambda checked, idx=i: self.switch_tab(idx))
             self.tab_buttons.append(btn)
             tab_item_layout.addWidget(btn)
-            # 脱离按钮
-            detach_btn = QPushButton('⧉')
-            detach_btn.setFixedSize(20, 20)
-            detach_btn.setFont(QFont("Microsoft YaHei", 9))
-            detach_btn.setCursor(Qt.PointingHandCursor)
-            detach_btn.setToolTip('脱离为独立窗口')
-            detach_btn.setStyleSheet("""
-                QPushButton { background: transparent; border: none; color: #666670; border-radius: 3px; }
-                QPushButton:hover { background: rgba(255,255,255,20); color: #c8c8cc; }
-            """)
-            detach_btn.clicked.connect(lambda checked, idx=i: self._detach_tab(idx))
-            self.tab_detach_btns.append(detach_btn)
-            tab_item_layout.addWidget(detach_btn)
             tab_bar.addWidget(tab_item)
 
         layout.addLayout(tab_bar)
@@ -4850,6 +4853,9 @@ class DetailPanel(QWidget):
         self.inline_text_edit.textChanged.connect(self._on_edit_text_changed)
         # 安装事件过滤器以检测图片点击
         self.inline_text_edit.viewport().installEventFilter(self)
+        # 安装事件过滤器以支持标签拖动脱离
+        for btn in self.tab_buttons:
+            btn.installEventFilter(self)
 
     def _show_record_menu(self):
         """显示笔记列表操作菜单"""
@@ -4938,7 +4944,26 @@ class DetailPanel(QWidget):
             self._inline_insert_link()
 
     def eventFilter(self, obj, event):
-        """事件过滤器 - 检测编辑器中图片的点击"""
+        """事件过滤器 - 检测编辑器中图片的点击 + 标签拖动脱离"""
+        # 标签按钮拖动脱离
+        if obj in self.tab_buttons and obj.isEnabled():
+            tab_idx = self.tab_buttons.index(obj)
+            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._tab_drag_idx = tab_idx
+                self._tab_drag_start = event.globalPos()
+            elif event.type() == event.MouseMove and self._tab_drag_idx is not None and self._tab_drag_start is not None:
+                delta = event.globalPos() - self._tab_drag_start
+                if delta.manhattanLength() > 15:
+                    # 拖动距离足够，脱离为独立窗口
+                    drag_idx = self._tab_drag_idx
+                    self._tab_drag_idx = None
+                    self._tab_drag_start = None
+                    self._detach_tab(drag_idx)
+                    return True
+            elif event.type() == event.MouseButtonRelease:
+                self._tab_drag_idx = None
+                self._tab_drag_start = None
+        # 编辑器图片点击检测
         if obj == self.inline_text_edit.viewport() and self._is_edit_mode:
             if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
                 cursor = self.inline_text_edit.cursorForPosition(
@@ -5475,10 +5500,10 @@ class DetailPanel(QWidget):
                                      self.user_info, self.user_password)
         dialog._on_close_callback = lambda idx=tab_idx: self._on_detached_closed(idx)
         self._detached_windows[tab_idx] = dialog
-        # 隐藏对应的标签按钮
+        # 更新图钉按钮状态
         self.tab_buttons[tab_idx].setEnabled(False)
-        self.tab_detach_btns[tab_idx].setText('↩')
-        self.tab_detach_btns[tab_idx].setToolTip('窗口已脱离')
+        self.tab_pin_btns[tab_idx].setText('📍')
+        self.tab_pin_btns[tab_idx].setToolTip('已独立显示')
         dialog.show()
         # 如果当前显示的是被脱离的标签，切换到第一个可用标签
         if self.current_tab == tab_idx:
@@ -5493,8 +5518,8 @@ class DetailPanel(QWidget):
             self._detached_windows[tab_idx] = None
         if tab_idx < len(self.tab_buttons):
             self.tab_buttons[tab_idx].setEnabled(True)
-            self.tab_detach_btns[tab_idx].setText('⧉')
-            self.tab_detach_btns[tab_idx].setToolTip('脱离为独立窗口')
+            self.tab_pin_btns[tab_idx].setText('📌')
+            self.tab_pin_btns[tab_idx].setToolTip('独立显示此标签页')
 
 
 class _DetachedTabWindow(QDialog):
