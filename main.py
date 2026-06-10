@@ -4328,7 +4328,7 @@ class DetailPanel(QWidget):
         self.tab_buttons = []
         self.tab_detach_btns = []
         self._detached_windows = {}
-        tab_names = ['临床与诊断', '标准报告模板', '影像所见与资料', '医学资料', '影像解剖图谱与资料']
+        tab_names = ['临床与诊断', '影像所见及标准报告参考', '影像相关病例', '医学资料', '影像解剖图谱与资料']
         for i, name in enumerate(tab_names):
             # 标签按钮容器
             tab_item = QWidget()
@@ -4365,7 +4365,7 @@ class DetailPanel(QWidget):
         line.setStyleSheet("background-color: #2a2a30; max-height: 1px;")
         layout.addWidget(line)
 
-        # 文本浏览器（临床与诊断、标准报告模板标签页使用）
+        # 文本浏览器（临床与诊断、影像所见及标准报告参考标签页使用）
         self.content_browser = QTextBrowser()
         self.content_browser.setOpenExternalLinks(True)
         self.content_browser.setStyleSheet("border: none; padding: 16px;")
@@ -4869,7 +4869,7 @@ class DetailPanel(QWidget):
             btn.setProperty('active', i == idx)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
-        # 临床与诊断、标准报告模板使用 content_browser
+        # 临床与诊断、影像所见及标准报告参考使用 content_browser
         is_simple = (idx == 0 or idx == 1)
         # 影像所见、医学资料、影像解剖使用 record_splitter
         is_record = (idx == 2 or idx == 3 or idx == 4)
@@ -4930,46 +4930,34 @@ class DetailPanel(QWidget):
         self.content_browser.setHtml(html)
 
     def _show_report_tab(self, d):
-        html = f'''
-        {self._html_heading("影像报告模板")}
-        {self._html_body(d.get("report_template",""))}
-        '''
+        html = ''
+        # 影像所见字段分区显示
+        imaging_findings = [
+            ('X线所见', d.get('xray_finding', '')),
+            ('CT所见', d.get('ct_finding', '')),
+            ('MRI所见', d.get('mri_finding', '')),
+            ('PET所见', d.get('pet_finding', '')),
+        ]
+        has_finding = False
+        for label, text in imaging_findings:
+            if text and text.strip():
+                has_finding = True
+                html += self._html_heading(label, 2)
+                html += self._html_body(text)
+        if has_finding:
+            html += '<hr style="border:1px solid #2a2a30; margin:16px 0;">'
+        # 标准报告模板
+        html += self._html_heading("影像报告模板")
+        html += self._html_body(d.get("report_template", ""))
         self.content_browser.setHtml(html)
 
     def _show_imaging_tab(self):
-        """影像所见与资料标签页 - 使用记录列表方式，顶部显示疾病影像所见"""
+        """影像相关病例标签页 - 使用记录列表方式"""
         self._current_record_type = 'imaging'
         self.record_list.clear()
         if not self.current_disease_id:
             self.record_content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
             return
-        # 在列表顶部添加疾病影像所见条目
-        d = self.disease_data
-        imaging_findings = [
-            ('X线所见', 'xray_finding', '🔬'),
-            ('CT所见', 'ct_finding', '🖥'),
-            ('MRI所见', 'mri_finding', '🧲'),
-            ('PET所见', 'pet_finding', '⚛'),
-        ]
-        has_finding = False
-        for label, field_key, icon in imaging_findings:
-            text = (d or {}).get(field_key, '') or ''
-            if text.strip():
-                has_finding = True
-                item = QListWidgetItem(f'{icon} {label}')
-                item.setData(Qt.UserRole, f'__finding__{field_key}')
-                item.setData(Qt.UserRole + 1, label)
-                item.setData(Qt.UserRole + 2, text)
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-                self.record_list.addItem(item)
-        # 添加分隔条目
-        if has_finding:
-            sep_item = QListWidgetItem('── 笔记记录 ──')
-            sep_item.setFlags(Qt.NoItemFlags)
-            sep_item.setTextAlignment(Qt.AlignCenter)
-            self.record_list.addItem(sep_item)
         # 加载影像记录
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
@@ -4978,13 +4966,13 @@ class DetailPanel(QWidget):
         rows = c.fetchall()
         conn.close()
         self._current_records = [(r[0], r[1], r[2]) for r in rows]
+        if not rows:
+            self.record_content_browser.setHtml('<p style="color:#666;">暂无影像资料，点击笔记列表标题栏菜单中的"添加笔记"创建</p>')
+            return
         for rid, title, content in rows:
             item = QListWidgetItem(title or '无标题')
             item.setData(Qt.UserRole, rid)
             self.record_list.addItem(item)
-        if not has_finding and not rows:
-            self.record_content_browser.setHtml('<p style="color:#666;">暂无影像资料，点击笔记列表标题栏菜单中的"添加笔记"创建</p>')
-            return
         self.record_list.setCurrentRow(0)
 
     def _show_medical_tab(self):
@@ -5037,14 +5025,6 @@ class DetailPanel(QWidget):
         if not item:
             return
         rid = item.data(Qt.UserRole)
-        # 检查是否为影像所见特殊条目
-        if isinstance(rid, str) and rid.startswith('__finding__'):
-            label = item.data(Qt.UserRole + 1) or ''
-            text = item.data(Qt.UserRole + 2) or ''
-            html = f'<h2 style="color:#5a91ff; margin-bottom:12px;">{label}</h2>'
-            html += f'<div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{text}</div>'
-            self.record_content_browser.setHtml(html)
-            return
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         if self._current_record_type == 'medical':
@@ -5097,10 +5077,6 @@ class DetailPanel(QWidget):
             QMessageBox.warning(self, '提示', '请先选择要编辑的笔记')
             return
         rid = current_item.data(Qt.UserRole)
-        # 影像所见特殊条目不可编辑
-        if isinstance(rid, str) and rid.startswith('__finding__'):
-            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，请在疾病编辑中修改')
-            return
         self._enter_edit_mode(record_id=rid)
 
     def _delete_record(self):
@@ -5110,10 +5086,6 @@ class DetailPanel(QWidget):
             QMessageBox.warning(self, '提示', '请先选择要删除的笔记')
             return
         rid = current_item.data(Qt.UserRole)
-        # 影像所见特殊条目不可删除
-        if isinstance(rid, str) and rid.startswith('__finding__'):
-            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，不可删除')
-            return
         title = current_item.text()
         reply = QMessageBox.question(
             self, '确认删除', f'确定要删除笔记"{title}"吗？',
@@ -5141,7 +5113,7 @@ class DetailPanel(QWidget):
             w.activateWindow()
             w.raise_()
             return
-        tab_names = ['临床与诊断', '标准报告模板', '影像所见与资料', '医学资料', '影像解剖图谱与资料']
+        tab_names = ['临床与诊断', '影像所见及标准报告参考', '影像相关病例', '医学资料', '影像解剖图谱与资料']
         title = tab_names[tab_idx] if tab_idx < len(tab_names) else '详情'
         if self.disease_data:
             title += f' - {self.disease_data.get("name_cn", "")}'
@@ -5202,7 +5174,7 @@ class _DetachedTabWindow(QDialog):
 
         # 内容区域
         if tab_idx <= 1:
-            # 临床与诊断 / 标准报告模板：简单文本浏览
+            # 临床与诊断 / 影像所见及标准报告参考：简单文本浏览
             self.content_browser = QTextBrowser()
             self.content_browser.setOpenExternalLinks(True)
             self.content_browser.setStyleSheet("border: none; padding: 16px;")
@@ -5220,7 +5192,7 @@ class _DetachedTabWindow(QDialog):
             self._load_records()
 
     def _load_simple_content(self):
-        """加载简单文本内容（临床与诊断、标准报告模板）"""
+        """加载简单文本内容（临床与诊断、影像所见及标准报告参考）"""
         d = self.disease_data
         if not d:
             self.content_browser.setHtml('<p style="color:#666;">无数据</p>')
@@ -5241,10 +5213,24 @@ class _DetachedTabWindow(QDialog):
             <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("treatment","")}</div>
             '''
         else:
-            html = f'''
-            <h2 style="color:#5a91ff;">影像报告模板</h2>
-            <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("report_template","")}</div>
-            '''
+            # 影像所见及标准报告参考：显示影像所见字段 + 报告模板
+            html = ''
+            imaging_findings = [
+                ('X线所见', d.get('xray_finding', '')),
+                ('CT所见', d.get('ct_finding', '')),
+                ('MRI所见', d.get('mri_finding', '')),
+                ('PET所见', d.get('pet_finding', '')),
+            ]
+            has_finding = False
+            for label, text in imaging_findings:
+                if text and text.strip():
+                    has_finding = True
+                    html += f'<h2 style="color:#5a91ff;">{label}</h2>'
+                    html += f'<div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{text}</div>'
+            if has_finding:
+                html += '<hr style="border:1px solid #2a2a30; margin:16px 0;">'
+            html += '<h2 style="color:#5a91ff;">影像报告模板</h2>'
+            html += f'<div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("report_template","")}</div>'
         self.content_browser.setHtml(html)
 
     def _build_record_panel(self, parent_layout):
@@ -5347,33 +5333,6 @@ class _DetachedTabWindow(QDialog):
         if not self.disease_id and self._current_record_type != 'anatomy':
             self.content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
             return
-        # 影像所见标签页：添加疾病影像所见
-        if self.tab_idx == 2 and self.disease_data:
-            d = self.disease_data
-            imaging_findings = [
-                ('X线所见', 'xray_finding', '🔬'),
-                ('CT所见', 'ct_finding', '🖥'),
-                ('MRI所见', 'mri_finding', '🧲'),
-                ('PET所见', 'pet_finding', '⚛'),
-            ]
-            has_finding = False
-            for label, field_key, icon in imaging_findings:
-                text = d.get(field_key, '') or ''
-                if text.strip():
-                    has_finding = True
-                    item = QListWidgetItem(f'{icon} {label}')
-                    item.setData(Qt.UserRole, f'__finding__{field_key}')
-                    item.setData(Qt.UserRole + 1, label)
-                    item.setData(Qt.UserRole + 2, text)
-                    font = item.font()
-                    font.setBold(True)
-                    item.setFont(font)
-                    self.record_list.addItem(item)
-            if has_finding:
-                sep_item = QListWidgetItem('── 笔记记录 ──')
-                sep_item.setFlags(Qt.NoItemFlags)
-                sep_item.setTextAlignment(Qt.AlignCenter)
-                self.record_list.addItem(sep_item)
         # 加载记录
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
@@ -5407,13 +5366,6 @@ class _DetachedTabWindow(QDialog):
         if not item:
             return
         rid = item.data(Qt.UserRole)
-        if isinstance(rid, str) and rid.startswith('__finding__'):
-            label = item.data(Qt.UserRole + 1) or ''
-            text = item.data(Qt.UserRole + 2) or ''
-            html = f'<h2 style="color:#5a91ff; margin-bottom:12px;">{label}</h2>'
-            html += f'<div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{text}</div>'
-            self.content_browser.setHtml(html)
-            return
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         if self._current_record_type == 'medical':
@@ -5481,9 +5433,6 @@ class _DetachedTabWindow(QDialog):
             QMessageBox.warning(self, '提示', '请先选择要编辑的笔记')
             return
         rid = current_item.data(Qt.UserRole)
-        if isinstance(rid, str) and rid.startswith('__finding__'):
-            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，请在疾病编辑中修改')
-            return
         self._enter_edit_mode(record_id=rid)
 
     def _delete_record(self):
@@ -5492,9 +5441,6 @@ class _DetachedTabWindow(QDialog):
             QMessageBox.warning(self, '提示', '请先选择要删除的笔记')
             return
         rid = current_item.data(Qt.UserRole)
-        if isinstance(rid, str) and rid.startswith('__finding__'):
-            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，不可删除')
-            return
         title = current_item.text()
         reply = QMessageBox.question(
             self, '确认删除', f'确定要删除笔记"{title}"吗？',
@@ -6460,7 +6406,7 @@ class MainWindow(QMainWindow):
 
             # 影像资料
             if data['imaging_records']:
-                doc.add_heading('影像所见与资料', level=2)
+                doc.add_heading('影像相关病例', level=2)
                 for rec in data['imaging_records']:
                     doc.add_heading(rec.get('title', '无标题'), level=3)
                     import re
@@ -6639,7 +6585,7 @@ class MainWindow(QMainWindow):
 
             # 影像资料
             if data['imaging_records']:
-                elements.append(Paragraph('影像所见与资料', h2_style))
+                elements.append(Paragraph('影像相关病例', h2_style))
                 for rec in data['imaging_records']:
                     elements.append(Paragraph(rec.get('title', '无标题'), h3_style))
                     text = re.sub(r'<[^>]+>', '', rec.get('content', ''))
