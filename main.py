@@ -19,7 +19,8 @@ from PyQt5.QtWidgets import (
     QMessageBox, QStatusBar, QFrame, QGroupBox, QSizePolicy,
     QScrollArea, QComboBox, QFileDialog, QMenu, QMenuBar,
     QAction, QCompleter, QToolBar, QSpinBox, QCheckBox,
-    QInputDialog, QSlider, QGridLayout, QAbstractItemView
+    QInputDialog, QSlider, QGridLayout, QAbstractItemView,
+    QStackedWidget
 )
 from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, QPropertyAnimation, QEasingCurve
 from PyQt5.QtWidgets import QGraphicsOpacityEffect
@@ -4311,6 +4312,9 @@ class DetailPanel(QWidget):
         self.current_tab = 0
         self.user_info = user_info
         self.user_password = user_password
+        self._current_record_type = 'medical'
+        self._editing_record_id = None
+        self._is_edit_mode = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4340,31 +4344,13 @@ class DetailPanel(QWidget):
         line.setStyleSheet("background-color: #2a2a30; max-height: 1px;")
         layout.addWidget(line)
 
-        # 内容区：可滚动页面容器
-        self.page_scroll = QScrollArea()
-        self.page_scroll.setWidgetResizable(True)
-        self.page_scroll.setStyleSheet(
-            "QScrollArea { border: none; background: transparent; }"
-            "QScrollBar:vertical { width: 8px; background: transparent; }"
-            "QScrollBar::handle:vertical { background: #555; border-radius: 4px; min-height: 30px; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        )
-        self.page_container = QWidget()
-        self.page_container.setStyleSheet("background: transparent;")
-        self.page_layout = QVBoxLayout(self.page_container)
-        self.page_layout.setContentsMargins(20, 20, 20, 20)
-        self.page_layout.setSpacing(8)
-        self.page_scroll.setWidget(self.page_container)
-        self.page_scroll.hide()
-        layout.addWidget(self.page_scroll)
-
-        # 文本浏览器（非影像标签页使用）
+        # 文本浏览器（临床与诊断、标准报告模板标签页使用）
         self.content_browser = QTextBrowser()
         self.content_browser.setOpenExternalLinks(True)
         self.content_browser.setStyleSheet("border: none; padding: 16px;")
         layout.addWidget(self.content_browser)
 
-        # 医学资料/影像解剖标签页：左侧列表+右侧内容
+        # 记录标签页（影像所见、医学资料、影像解剖）：左侧列表+右侧内容
         self.record_splitter = QSplitter(Qt.Horizontal)
         self.record_splitter.setStyleSheet("QSplitter::handle { background: #2a2a30; width: 1px; }")
 
@@ -4390,38 +4376,69 @@ class DetailPanel(QWidget):
         self.record_list_panel.setFixedWidth(200)
         self.record_splitter.addWidget(self.record_list_panel)
 
-        # 右侧内容显示
+        # 右侧内容：堆叠组件（查看模式 / 编辑模式）
+        self.record_stack = QStackedWidget()
+
+        # Page 0: 查看模式 - QTextBrowser
         self.record_content_browser = QTextBrowser()
         self.record_content_browser.setOpenExternalLinks(True)
         self.record_content_browser.setStyleSheet("border: none; padding: 16px;")
-        self.record_splitter.addWidget(self.record_content_browser)
+        self.record_stack.addWidget(self.record_content_browser)
 
+        # Page 1: 编辑模式 - 标题输入 + 工具栏 + QTextEdit
+        edit_widget = QWidget()
+        edit_layout = QVBoxLayout(edit_widget)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        edit_layout.setSpacing(0)
+
+        # 编辑模式标题栏
+        edit_title_bar = QWidget()
+        edit_title_bar.setFixedHeight(50)
+        edit_title_layout = QHBoxLayout(edit_title_bar)
+        edit_title_layout.setContentsMargins(12, 8, 12, 8)
+        self.inline_title_input = QLineEdit()
+        self.inline_title_input.setPlaceholderText('输入标题...')
+        self.inline_title_input.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+        edit_title_layout.addWidget(self.inline_title_input)
+        # 保存按钮
+        self.btn_inline_save = QPushButton('保存')
+        self.btn_inline_save.setFixedHeight(28)
+        self.btn_inline_save.setFixedWidth(60)
+        self.btn_inline_save.setObjectName('accentBtn')
+        self.btn_inline_save.setToolTip('保存 (Ctrl+S)')
+        self.btn_inline_save.clicked.connect(lambda checked: self._exit_edit_mode(save=True))
+        edit_title_layout.addWidget(self.btn_inline_save)
+        # 取消按钮
+        self.btn_inline_cancel = QPushButton('取消')
+        self.btn_inline_cancel.setFixedHeight(28)
+        self.btn_inline_cancel.setFixedWidth(60)
+        self.btn_inline_cancel.clicked.connect(lambda checked: self._exit_edit_mode(save=False))
+        edit_title_layout.addWidget(self.btn_inline_cancel)
+        # 保存状态指示
+        self.inline_save_indicator = QLabel('已保存')
+        self.inline_save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+        edit_title_layout.addWidget(self.inline_save_indicator)
+        edit_layout.addWidget(edit_title_bar)
+
+        # 内嵌格式化工具栏
+        self._build_inline_toolbar(edit_layout)
+
+        # 内嵌富文本编辑器
+        self.inline_text_edit = QTextEdit()
+        self.inline_text_edit.setAcceptRichText(True)
+        self.inline_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.inline_text_edit.customContextMenuRequested.connect(self._show_inline_context_menu)
+        edit_layout.addWidget(self.inline_text_edit, stretch=1)
+
+        self.record_stack.addWidget(edit_widget)
+
+        self.record_splitter.addWidget(self.record_stack)
         self.record_splitter.setStretchFactor(0, 0)
         self.record_splitter.setStretchFactor(1, 1)
         self.record_splitter.hide()
         layout.addWidget(self.record_splitter)
 
-        # 影像操作栏（仅影像所见标签页显示）
-        self.img_action_bar = QWidget()
-        img_action_layout = QHBoxLayout(self.img_action_bar)
-        img_action_layout.setContentsMargins(8, 4, 8, 4)
-        img_action_layout.setSpacing(8)
-
-        self.btn_open_img = QPushButton('添加图片文件')
-        self.btn_open_img.setFixedHeight(32)
-        self.btn_open_img.clicked.connect(self._open_image_file)
-        img_action_layout.addWidget(self.btn_open_img)
-
-        self.btn_paste_img = QPushButton('粘贴剪贴板图片')
-        self.btn_paste_img.setFixedHeight(32)
-        self.btn_paste_img.clicked.connect(self._paste_clipboard_image)
-        img_action_layout.addWidget(self.btn_paste_img)
-
-        img_action_layout.addStretch()
-        self.img_action_bar.hide()
-        layout.addWidget(self.img_action_bar)
-
-        # 医学资料/影像解剖操作栏
+        # 记录操作栏（影像所见、医学资料、影像解剖共用）
         self.record_action_bar = QWidget()
         record_action_layout = QHBoxLayout(self.record_action_bar)
         record_action_layout.setContentsMargins(8, 4, 8, 4)
@@ -4450,20 +4467,376 @@ class DetailPanel(QWidget):
         # 存储当前影像页面的图片列表（用于双击浏览）
         self._current_image_list = []
 
+        # 自动保存定时器
+        self._inline_save_timer = QTimer(self)
+        self._inline_save_timer.setSingleShot(True)
+        self._inline_save_timer.timeout.connect(self._inline_auto_save)
+
+    def _build_inline_toolbar(self, parent_layout):
+        """构建内嵌格式化工具栏"""
+        toolbar_widget = QWidget()
+        toolbar_widget.setFixedHeight(36)
+        tb = QHBoxLayout(toolbar_widget)
+        tb.setContentsMargins(8, 2, 8, 2)
+        tb.setSpacing(2)
+
+        # 标题级别
+        heading_combo = QComboBox()
+        heading_combo.addItems(['正文', '标题1', '标题2', '标题3', '标题4'])
+        heading_combo.setFixedWidth(90)
+        heading_combo.setFixedHeight(28)
+        heading_combo.currentIndexChanged.connect(self._inline_set_heading)
+        tb.addWidget(heading_combo)
+        self._inline_heading_combo = heading_combo
+
+        tb.addSpacing(6)
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.VLine)
+        sep1.setStyleSheet("color: #444;")
+        tb.addWidget(sep1)
+        tb.addSpacing(6)
+
+        # 文本样式按钮
+        style_buttons = [
+            ('bold', '加粗', self._inline_toggle_bold),
+            ('italic', '斜体', self._inline_toggle_italic),
+            ('underline', '下划线', self._inline_toggle_underline),
+            ('strikethrough', '删除线', self._inline_toggle_strikethrough),
+        ]
+        for fmt_id, tip, callback in style_buttons:
+            btn = _FormatBtn(fmt_id)
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addSpacing(6)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet("color: #444;")
+        tb.addWidget(sep2)
+        tb.addSpacing(6)
+
+        # 列表按钮
+        list_buttons = [
+            ('bullet_list', '无序列表', self._inline_toggle_bullet_list),
+            ('ordered_list', '有序列表', self._inline_toggle_ordered_list),
+            ('todo_list', '待办列表', self._inline_toggle_todo_list),
+        ]
+        for fmt_id, tip, callback in list_buttons:
+            btn = _FormatBtn(fmt_id)
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addSpacing(6)
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.VLine)
+        sep3.setStyleSheet("color: #444;")
+        tb.addWidget(sep3)
+        tb.addSpacing(6)
+
+        # 对齐按钮
+        align_buttons = [
+            ('align_left', '左对齐', self._inline_align_left),
+            ('align_center', '居中', self._inline_align_center),
+            ('align_right', '右对齐', self._inline_align_right),
+        ]
+        for fmt_id, tip, callback in align_buttons:
+            btn = _FormatBtn(fmt_id)
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addSpacing(6)
+        sep4 = QFrame()
+        sep4.setFrameShape(QFrame.VLine)
+        sep4.setStyleSheet("color: #444;")
+        tb.addWidget(sep4)
+        tb.addSpacing(6)
+
+        # 颜色按钮
+        self._inline_color_btn = _FormatBtn('text_color')
+        self._inline_color_btn.setToolTip('文字颜色')
+        self._inline_color_btn.clicked.connect(self._inline_set_text_color)
+        tb.addWidget(self._inline_color_btn)
+
+        self._inline_bg_color_btn = _FormatBtn('bg_color')
+        self._inline_bg_color_btn.setToolTip('背景颜色')
+        self._inline_bg_color_btn.clicked.connect(self._inline_set_bg_color)
+        tb.addWidget(self._inline_bg_color_btn)
+
+        tb.addSpacing(6)
+        sep5 = QFrame()
+        sep5.setFrameShape(QFrame.VLine)
+        sep5.setStyleSheet("color: #444;")
+        tb.addWidget(sep5)
+        tb.addSpacing(6)
+
+        # 插入按钮
+        insert_buttons = [
+            ('insert_image', '插入图片', self._inline_insert_image),
+            ('insert_link', '插入链接', self._inline_insert_link),
+            ('insert_table', '插入表格', self._inline_insert_table),
+            ('insert_hr', '插入分隔线', self._inline_insert_hr),
+        ]
+        for fmt_id, tip, callback in insert_buttons:
+            btn = _FormatBtn(fmt_id)
+            btn.setToolTip(tip)
+            btn.clicked.connect(callback)
+            tb.addWidget(btn)
+
+        tb.addStretch()
+
+        # 代码块
+        btn_code = _FormatBtn('insert_code')
+        btn_code.setToolTip('代码块')
+        btn_code.clicked.connect(self._inline_insert_code_block)
+        tb.addWidget(btn_code)
+
+        parent_layout.addWidget(toolbar_widget)
+
+    # ── 内嵌编辑器格式化操作 ──
+    def _inline_set_heading(self, idx):
+        sizes = [10, 20, 16, 14, 12]
+        weights = [QFont.Normal, QFont.Bold, QFont.Bold, QFont.Bold, QFont.Bold]
+        fmt = self.inline_text_edit.currentCharFormat()
+        fmt.setFontPointSize(sizes[idx])
+        fmt.setFontWeight(weights[idx])
+        self.inline_text_edit.setCurrentCharFormat(fmt)
+
+    def _inline_toggle_bold(self):
+        self.inline_text_edit.setFontWeight(
+            QFont.Normal if self.inline_text_edit.fontWeight() == QFont.Bold else QFont.Bold
+        )
+
+    def _inline_toggle_italic(self):
+        self.inline_text_edit.setFontItalic(not self.inline_text_edit.fontItalic())
+
+    def _inline_toggle_underline(self):
+        self.inline_text_edit.setFontUnderline(not self.inline_text_edit.fontUnderline())
+
+    def _inline_toggle_strikethrough(self):
+        fmt = self.inline_text_edit.currentCharFormat()
+        fmt.setFontStrikeOut(not fmt.fontStrikeOut())
+        self.inline_text_edit.setCurrentCharFormat(fmt)
+
+    def _inline_toggle_bullet_list(self):
+        self.inline_text_edit.insertList(QTextListFormat.ListDisc)
+
+    def _inline_toggle_ordered_list(self):
+        self.inline_text_edit.insertList(QTextListFormat.ListDecimal)
+
+    def _inline_toggle_todo_list(self):
+        cursor = self.inline_text_edit.textCursor()
+        cursor.insertList(QTextListFormat.ListDisc)
+        cursor.insertText('☐ ')
+
+    def _inline_align_left(self):
+        self.inline_text_edit.setAlignment(Qt.AlignLeft)
+
+    def _inline_align_center(self):
+        self.inline_text_edit.setAlignment(Qt.AlignCenter)
+
+    def _inline_align_right(self):
+        self.inline_text_edit.setAlignment(Qt.AlignRight)
+
+    def _inline_set_text_color(self):
+        from PyQt5.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(Qt.black, self, '选择文字颜色')
+        if color.isValid():
+            self.inline_text_edit.setTextColor(color)
+
+    def _inline_set_bg_color(self):
+        from PyQt5.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(Qt.white, self, '选择背景颜色')
+        if color.isValid():
+            self.inline_text_edit.setTextBackgroundColor(color)
+
+    def _inline_insert_image(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, '选择图片', '', '图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)'
+        )
+        for fp in file_paths:
+            img_dir = os.path.join(APP_DIR, 'images')
+            os.makedirs(img_dir, exist_ok=True)
+            import uuid
+            ext = os.path.splitext(fp)[1]
+            filename = str(uuid.uuid4())[:8] + ext
+            dest = os.path.join(img_dir, filename)
+            shutil.copy2(fp, dest)
+            # 尝试加密存储到数据库
+            if self.active_db and self.user_password:
+                try:
+                    key = generate_key(self.user_password)
+                    with open(dest, 'rb') as f:
+                        raw_data = f.read()
+                    image_data_blob = encrypt_data(raw_data, key)
+                    add_image(
+                        self.active_db, None, filename, '', '', '', 'image',
+                        encrypted=True, image_data=image_data_blob
+                    )
+                except Exception as e:
+                    print(f"加密存储图片失败: {e}")
+            self.inline_text_edit.insertHtml(
+                f'<img src="{dest}" style="max-width:100%; margin:8px 0;">'
+            )
+
+    def _inline_insert_link(self):
+        from PyQt5.QtWidgets import QInputDialog
+        url, ok = QInputDialog.getText(self, '插入链接', 'URL:')
+        if ok and url:
+            self.inline_text_edit.insertHtml(f'<a href="{url}" style="color:#3f7bf7;">{url}</a>')
+
+    def _inline_insert_table(self):
+        self.inline_text_edit.insertHtml(
+            '<table border="1" style="border-collapse:collapse; width:100%; margin:8px 0;">'
+            '<tr><td style="padding:6px; border:1px solid #444;">&nbsp;</td>'
+            '<td style="padding:6px; border:1px solid #444;">&nbsp;</td></tr>'
+            '<tr><td style="padding:6px; border:1px solid #444;">&nbsp;</td>'
+            '<td style="padding:6px; border:1px solid #444;">&nbsp;</td></tr>'
+            '</table>'
+        )
+
+    def _inline_insert_hr(self):
+        self.inline_text_edit.insertHtml('<hr style="border:1px solid #444; margin:8px 0;">')
+
+    def _inline_insert_code_block(self):
+        self.inline_text_edit.insertHtml(
+            '<pre style="background:#1a1a1e; color:#c8c8cc; padding:12px; '
+            'border-radius:4px; font-family:Consolas,monospace; font-size:13px; '
+            'overflow-x:auto; margin:8px 0;">代码</pre>'
+        )
+
+    def _show_inline_context_menu(self, pos):
+        """显示内嵌编辑器右键菜单"""
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; }"
+                          "QMenu::item:selected { background-color: #3f7bf7; }")
+        act_undo = menu.addAction('撤销')
+        act_redo = menu.addAction('重做')
+        menu.addSeparator()
+        act_cut = menu.addAction('剪切')
+        act_copy = menu.addAction('复制')
+        act_paste = menu.addAction('粘贴')
+        menu.addSeparator()
+        act_select_all = menu.addAction('全选')
+
+        action = menu.exec_(self.inline_text_edit.viewport().mapToGlobal(pos))
+        if action == act_undo:
+            self.inline_text_edit.undo()
+        elif action == act_redo:
+            self.inline_text_edit.redo()
+        elif action == act_cut:
+            self.inline_text_edit.cut()
+        elif action == act_copy:
+            self.inline_text_edit.copy()
+        elif action == act_paste:
+            self.inline_text_edit.paste()
+        elif action == act_select_all:
+            self.inline_text_edit.selectAll()
+
+    # ── 编辑模式切换 ──
+    def _enter_edit_mode(self, record_id=None):
+        """进入编辑模式"""
+        self._is_edit_mode = True
+        self._editing_record_id = record_id
+
+        if record_id:
+            # 加载现有记录
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self._current_record_type == 'medical':
+                c.execute("SELECT title, content FROM medical_records WHERE id=?", (record_id,))
+            elif self._current_record_type == 'anatomy':
+                c.execute("SELECT title, content FROM anatomy_records WHERE id=?", (record_id,))
+            else:  # imaging
+                c.execute("SELECT title, content FROM imaging_records WHERE id=?", (record_id,))
+            row_data = c.fetchone()
+            conn.close()
+            if row_data:
+                self.inline_title_input.setText(row_data[0] or '')
+                self.inline_text_edit.setHtml(row_data[1] or '')
+            else:
+                self.inline_title_input.setText('')
+                self.inline_text_edit.setHtml('')
+        else:
+            self.inline_title_input.setText('')
+            self.inline_text_edit.setHtml('')
+
+        self.inline_save_indicator.setText('编辑中...')
+        self.inline_save_indicator.setStyleSheet("color: #f0a030; font-size: 11px; background: transparent;")
+        self.record_stack.setCurrentIndex(1)
+        self.inline_title_input.setFocus()
+        # 禁用列表切换避免丢失编辑
+        self.record_list.setEnabled(False)
+
+    def _exit_edit_mode(self, save=True):
+        """退出编辑模式"""
+        if save and self._editing_record_id is not None:
+            self._inline_save_current()
+        self._is_edit_mode = False
+        self._editing_record_id = None
+        self._inline_save_timer.stop()
+        self.record_stack.setCurrentIndex(0)
+        self.record_list.setEnabled(True)
+        self._refresh_content()
+
+    def _inline_save_current(self):
+        """保存当前编辑内容到数据库"""
+        if self._editing_record_id is None:
+            return
+        title = self.inline_title_input.text().strip() or '无标题'
+        content = self.inline_text_edit.toHtml()
+        try:
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self._current_record_type == 'medical':
+                c.execute("UPDATE medical_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._editing_record_id))
+            elif self._current_record_type == 'anatomy':
+                c.execute("UPDATE anatomy_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._editing_record_id))
+            else:  # imaging
+                c.execute("UPDATE imaging_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._editing_record_id))
+            conn.commit()
+            conn.close()
+            self.inline_save_indicator.setText('已保存')
+            self.inline_save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+        except Exception as e:
+            self.inline_save_indicator.setText(f'保存失败: {e}')
+            self.inline_save_indicator.setStyleSheet("color: #e64a3a; font-size: 11px; background: transparent;")
+
+    def _inline_auto_save(self):
+        """内嵌编辑器自动保存"""
+        self._inline_save_current()
+
+    def keyPressEvent(self, event):
+        if self._is_edit_mode and event.key() == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
+            self._inline_save_timer.stop()
+            self._inline_save_current()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    # ── 标签切换 ──
     def switch_tab(self, idx):
+        # 如果正在编辑，先保存
+        if self._is_edit_mode:
+            self._exit_edit_mode(save=True)
         self.current_tab = idx
         for i, btn in enumerate(self.tab_buttons):
             btn.setProperty('active', i == idx)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
-        # 影像操作栏和页面滚动区仅在影像所见标签页显示
-        is_imaging = (idx == 2)
-        is_record = (idx == 3 or idx == 4)  # 医学资料或影像解剖
-        self.img_action_bar.setVisible(is_imaging)
-        self.page_scroll.setVisible(is_imaging)
-        self.record_action_bar.setVisible(is_record)
-        self.content_browser.setVisible(not is_imaging and not is_record)
+        # 临床与诊断、标准报告模板使用 content_browser
+        is_simple = (idx == 0 or idx == 1)
+        # 影像所见、医学资料、影像解剖使用 record_splitter + record_action_bar
+        is_record = (idx == 2 or idx == 3 or idx == 4)
+        self.content_browser.setVisible(is_simple)
         self.record_splitter.setVisible(is_record)
+        self.record_action_bar.setVisible(is_record)
         self._refresh_content()
 
     def load_disease(self, disease_id, db_path):
@@ -4476,147 +4849,10 @@ class DetailPanel(QWidget):
             self.disease_data = None
         self._refresh_content()
 
-    def _open_image_file(self):
-        if not self.current_disease_id:
-            QMessageBox.warning(self, '提示', '请先选择一个疾病')
-            return
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self, '选择图片', '', 'Images (*.png *.jpg *.jpeg *.bmp *.gif)')
-        if not file_paths:
-            return
-        # 询问是否加密
-        encrypt = QMessageBox.question(
-            self, '加密选项', '是否加密这些图片？\n（加密后只有当前用户可以查看）',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        ) == QMessageBox.Yes
-
-        img_dir = os.path.join(APP_DIR, 'images')
-        os.makedirs(img_dir, exist_ok=True)
-        owner_id = self.user_info.get('id') if self.user_info else None
-        encryption_hash = hash_password(self.user_password) if self.user_password else None
-
-        for fp in file_paths:
-            filename = os.path.basename(fp)
-            dest = os.path.join(img_dir, filename)
-            if os.path.exists(dest) and dest != fp:
-                base, ext = os.path.splitext(filename)
-                i = 1
-                while os.path.exists(os.path.join(img_dir, f'{base}_{i}{ext}')):
-                    i += 1
-                filename = f'{base}_{i}{ext}'
-                dest = os.path.join(img_dir, filename)
-            if fp != dest:
-                shutil.copy2(fp, dest)
-
-            # 加密并存储到数据库
-            image_data_blob = None
-            if self.user_password:
-                try:
-                    key = generate_key(self.user_password)
-                    with open(dest, 'rb') as f:
-                        raw_data = f.read()
-                    image_data_blob = encrypt_data(raw_data, key)
-                    encrypt = True
-                except Exception as e:
-                    QMessageBox.warning(self, '加密失败', f'图片加密失败: {e}')
-                    image_data_blob = None
-                    encrypt = False
-            elif encrypt:
-                # 没有密码但要求加密，使用旧的文件加密方式
-                try:
-                    key = generate_key('')
-                    encrypt_image(dest, key)
-                except Exception as e:
-                    QMessageBox.warning(self, '加密失败', f'图片加密失败: {e}')
-
-            # 添加到数据库
-            img_id = add_image(
-                self.active_db, self.current_disease_id, filename, '', '', '',
-                'image', owner_id=owner_id, encrypted=encrypt,
-                encryption_hash=encryption_hash if encrypt else None,
-                image_data=image_data_blob
-            )
-
-            # 如果成功存储到数据库，删除本地文件
-            if image_data_blob and img_id:
-                try:
-                    os.remove(dest)
-                    # 也删除预览文件（如果存在）
-                    preview_path = os.path.splitext(dest)[0] + '.preview.png'
-                    if os.path.exists(preview_path):
-                        os.remove(preview_path)
-                except Exception as e:
-                    print(f"删除本地图片文件失败: {e}")
-
-        self._refresh_content()
-
-    def _paste_clipboard_image(self):
-        if not self.current_disease_id:
-            QMessageBox.warning(self, '提示', '请先选择一个疾病')
-            return
-        clipboard = QApplication.clipboard()
-        pixmap = clipboard.pixmap()
-        if pixmap.isNull():
-            QMessageBox.warning(self, '提示', '剪贴板中没有图片')
-            return
-        # 询问是否加密
-        encrypt = QMessageBox.question(
-            self, '加密选项', '是否加密这张图片？\n（加密后只有当前用户可以查看）',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        ) == QMessageBox.Yes
-
-        img_dir = os.path.join(APP_DIR, 'images')
-        os.makedirs(img_dir, exist_ok=True)
-        # 生成唯一文件名
-        import time
-        filename = f'paste_{int(time.time() * 1000)}.png'
-        dest = os.path.join(img_dir, filename)
-        while os.path.exists(dest):
-            filename = f'paste_{int(time.time() * 1000)}_{os.getpid()}.png'
-            dest = os.path.join(img_dir, filename)
-        pixmap.save(dest, 'PNG')
-
-        # 加密并存储到数据库
-        owner_id = self.user_info.get('id') if self.user_info else None
-        encryption_hash = hash_password(self.user_password) if self.user_password else None
-        image_data_blob = None
-        if self.user_password:
-            try:
-                key = generate_key(self.user_password)
-                with open(dest, 'rb') as f:
-                    raw_data = f.read()
-                image_data_blob = encrypt_data(raw_data, key)
-                encrypt = True
-            except Exception as e:
-                QMessageBox.warning(self, '加密失败', f'图片加密失败: {e}')
-                image_data_blob = None
-                encrypt = False
-        elif encrypt:
-            try:
-                key = generate_key('')
-                encrypt_image(dest, key)
-            except Exception as e:
-                QMessageBox.warning(self, '加密失败', f'图片加密失败: {e}')
-
-        img_id = add_image(
-            self.active_db, self.current_disease_id, filename, '', '', '',
-            'image', owner_id=owner_id, encrypted=encrypt,
-            encryption_hash=encryption_hash if encrypt else None,
-            image_data=image_data_blob
-        )
-
-        # 如果成功存储到数据库，删除本地文件
-        if image_data_blob and img_id:
-            try:
-                os.remove(dest)
-            except Exception as e:
-                print(f"删除本地图片文件失败: {e}")
-
-        self._refresh_content()
-
     def _refresh_content(self):
         if not self.disease_data:
             self.content_browser.setHtml('<p style="color:#666;">请从左侧选择一个疾病</p>')
+            self.record_content_browser.setHtml('<p style="color:#666;">请从左侧选择一个疾病</p>')
             return
         d = self.disease_data
         if self.current_tab == 0:
@@ -4624,7 +4860,7 @@ class DetailPanel(QWidget):
         elif self.current_tab == 1:
             self._show_report_tab(d)
         elif self.current_tab == 2:
-            self._show_imaging_tab(d)
+            self._show_imaging_tab()
         elif self.current_tab == 3:
             self._show_medical_tab()
         elif self.current_tab == 4:
@@ -4662,181 +4898,28 @@ class DetailPanel(QWidget):
         '''
         self.content_browser.setHtml(html)
 
-    def _show_imaging_tab(self, d):
-        # 清除页面容器中的旧内容（包括 stretch）
-        while self.page_layout.count():
-            item = self.page_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        self._current_image_list = []
-
+    def _show_imaging_tab(self):
+        """影像所见与资料标签页 - 使用记录列表方式"""
+        self._current_record_type = 'imaging'
+        self.record_list.clear()
         if not self.current_disease_id:
-            lbl = QLabel('请先选择疾病')
-            lbl.setStyleSheet("color: #666; padding: 16px; background: transparent;")
-            self.page_layout.addWidget(lbl)
-            self.page_layout.addStretch()
+            self.record_content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
             return
-
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, filename, caption, media_type, owner_id, encrypted, encryption_hash, image_data FROM images WHERE disease_id=?",
+        c.execute("SELECT id, title, content FROM imaging_records WHERE disease_id=? ORDER BY id DESC",
                   (self.current_disease_id,))
         rows = c.fetchall()
         conn.close()
-
-        # 收集所有图片路径（用于双击浏览）
-        for img_id, filename, caption, media_type, owner_id, encrypted, encryption_hash, image_data in rows:
-            img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
-            # 图片在数据库中或文件存在时都加入列表
-            if image_data or (img_path and os.path.exists(img_path)):
-                self._current_image_list.append((img_id, img_path))
-
-        # 辅助方法：添加标题
-        def add_heading(text, level=2):
-            colors = {1: '#3f7bf7', 2: '#5a91ff', 3: '#7aadff'}
-            color = colors.get(level, '#5a91ff')
-            sizes = {1: '20px', 2: '16px', 3: '14px'}
-            size = sizes.get(level, '14px')
-            lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {color}; font-size: {size}; font-weight: bold; margin-top: 12px; margin-bottom: 4px; background: transparent;")
-            self.page_layout.addWidget(lbl)
-
-        # 辅助方法：添加正文
-        def add_body(text):
-            if not text:
-                return
-            lbl = QLabel(text)
-            lbl.setWordWrap(True)
-            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            lbl.setStyleSheet("color: #c8c8cc; line-height: 1.8; font-size: 13px; margin-bottom: 4px; background: transparent;")
-            self.page_layout.addWidget(lbl)
-
-        # 辅助方法：添加内联图片
-        def add_image(img_id, filename, caption, owner_id=None, encrypted=0, encryption_hash=None, image_data=None):
-            img_path = os.path.join(APP_DIR, 'images', filename) if filename else ''
-            pixmap = None
-
-            # 优先从数据库加载加密图片
-            if image_data and self.user_password:
-                try:
-                    key = generate_key(self.user_password)
-                    decrypted_data = load_image_decrypted(self.active_db, img_id, key)
-                    if decrypted_data:
-                        pixmap = QPixmap()
-                        pixmap.loadFromData(decrypted_data)
-                except Exception as e:
-                    print(f"从数据库加载图片失败: {e}")
-
-            # 回退到文件系统
-            if (pixmap is None or pixmap.isNull()) and img_path and os.path.exists(img_path):
-                if encrypted:
-                    # 检查是否是当前用户的图片
-                    current_user_id = self.user_info.get('id') if self.user_info else None
-                    if owner_id is not None and owner_id != current_user_id:
-                        lbl = QLabel('🔒 加密图片（需要登录用户权限）')
-                        lbl.setStyleSheet("color: #888; padding: 20px; background: #333; border-radius: 4px;")
-                        self.page_layout.addWidget(lbl, alignment=Qt.AlignCenter)
-                        return
-                    if self.user_password:
-                        try:
-                            key = generate_key(self.user_password)
-                            decrypted_data = decrypt_image(img_path, key)
-                            if decrypted_data:
-                                pixmap = QPixmap()
-                                pixmap.loadFromData(decrypted_data)
-                        except Exception as e:
-                            print(f"解密失败: {e}")
-                    if pixmap is None or pixmap.isNull():
-                        lbl = QLabel('🔒 图片解密失败')
-                        lbl.setStyleSheet("color: #888; padding: 20px; background: #333; border-radius: 4px;")
-                        self.page_layout.addWidget(lbl, alignment=Qt.AlignCenter)
-                        return
-                else:
-                    preview_path = os.path.splitext(img_path)[0] + '.preview.png'
-                    if os.path.exists(preview_path):
-                        pixmap = QPixmap(preview_path)
-                    else:
-                        pixmap = QPixmap(img_path)
-
-            if pixmap is None or pixmap.isNull():
-                return
-            img_label = _ImageLabel(pixmap, img_id=img_id, img_path=img_path, max_width=400)
-            img_label.double_clicked.connect(self._on_image_double_clicked)
-            self.page_layout.addWidget(img_label, alignment=Qt.AlignCenter)
-            # 图片说明
-            if caption:
-                cap_lbl = QLabel(caption)
-                cap_lbl.setStyleSheet("color: #888890; font-size: 11px; margin-bottom: 8px; background: transparent;")
-                cap_lbl.setAlignment(Qt.AlignCenter)
-                self.page_layout.addWidget(cap_lbl)
-
-        # 渲染页面内容
-        add_heading("影像所见")
-
-        if d.get('xray_finding'):
-            add_heading("X线", 3)
-            add_body(d['xray_finding'])
-            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash, image_data in rows:
-                if mt == 'xray':
-                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash, image_data)
-
-        if d.get('ct_finding'):
-            add_heading("CT", 3)
-            add_body(d['ct_finding'])
-            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash, image_data in rows:
-                if mt == 'ct':
-                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash, image_data)
-
-        if d.get('mri_finding'):
-            add_heading("MRI", 3)
-            add_body(d['mri_finding'])
-            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash, image_data in rows:
-                if mt == 'mri':
-                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash, image_data)
-
-        if d.get('pet_finding'):
-            add_heading("PET", 3)
-            add_body(d['pet_finding'])
-            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash, image_data in rows:
-                if mt == 'pet':
-                    add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash, image_data)
-
-        # 未分类的图片（media_type 为 'image' 或其他）
-        uncategorized = [(iid, fn, cap, mt, oid, enc, enc_hash, img_d) for iid, fn, cap, mt, oid, enc, enc_hash, img_d in rows
-                         if mt not in ('xray', 'ct', 'mri', 'pet')]
-        if uncategorized:
-            add_heading("影像资料", 3)
-            for img_id, filename, caption, mt, owner_id, encrypted, encryption_hash, image_data in uncategorized:
-                add_image(img_id, filename, caption, owner_id, encrypted, encryption_hash, image_data)
-
-        # 底部提示
-        tip = QLabel(f'共 {len(rows)} 张影像（悬停滚轮缩放，双击图片进入编辑）')
-        tip.setStyleSheet("color: #888890; font-size: 11px; margin-top: 12px; background: transparent;")
-        self.page_layout.addWidget(tip)
-
-        # 末尾 stretch
-        self.page_layout.addStretch()
-
-    def _on_image_double_clicked(self, img_id, img_path):
-        """内联图片双击：直接打开图片编辑器"""
-        if img_path and os.path.exists(img_path):
-            editor = ImageEditorDialog(img_path, self,
-                                       active_db=self.active_db,
-                                       user_password=self.user_password,
-                                       image_id=img_id)
-            editor.image_updated.connect(lambda p: self._refresh_content())
-            editor.exec_()
-            self._refresh_content()
-        elif img_id and self.active_db and self.user_password:
-            # 图片在数据库中，文件不存在时也可以打开编辑器
-            editor = ImageEditorDialog(img_path or '', self,
-                                       active_db=self.active_db,
-                                       user_password=self.user_password,
-                                       image_id=img_id)
-            editor.image_updated.connect(lambda p: self._refresh_content())
-            editor.exec_()
-            self._refresh_content()
+        self._current_records = [(r[0], r[1], r[2]) for r in rows]
+        if not rows:
+            self.record_content_browser.setHtml('<p style="color:#666;">暂无影像资料，点击"添加图文"创建</p>')
+            return
+        for rid, title, content in rows:
+            item = QListWidgetItem(title or '无标题')
+            item.setData(Qt.UserRole, rid)
+            self.record_list.addItem(item)
+        self.record_list.setCurrentRow(0)
 
     def _show_medical_tab(self):
         self._current_record_type = 'medical'
@@ -4846,7 +4929,7 @@ class DetailPanel(QWidget):
             return
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, title, content FROM medical_records WHERE disease_id=?",
+        c.execute("SELECT id, title, content FROM medical_records WHERE disease_id=? ORDER BY id DESC",
                   (self.current_disease_id,))
         rows = c.fetchall()
         conn.close()
@@ -4865,7 +4948,7 @@ class DetailPanel(QWidget):
         self.record_list.clear()
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, title, content FROM anatomy_records")
+        c.execute("SELECT id, title, content FROM anatomy_records ORDER BY id DESC")
         rows = c.fetchall()
         conn.close()
         self._current_records = [(r[0], r[1], r[2]) for r in rows]
@@ -4880,6 +4963,8 @@ class DetailPanel(QWidget):
 
     def _on_record_list_clicked(self, row):
         """点击笔记列表项，在右侧显示内容"""
+        if self._is_edit_mode:
+            return  # 编辑模式下不切换
         if row < 0:
             return
         item = self.record_list.item(row)
@@ -4888,11 +4973,12 @@ class DetailPanel(QWidget):
         rid = item.data(Qt.UserRole)
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        record_type = getattr(self, '_current_record_type', 'medical')
-        if record_type == 'medical':
+        if self._current_record_type == 'medical':
             c.execute("SELECT title, content FROM medical_records WHERE id=?", (rid,))
-        else:
+        elif self._current_record_type == 'anatomy':
             c.execute("SELECT title, content FROM anatomy_records WHERE id=?", (rid,))
+        else:  # imaging
+            c.execute("SELECT title, content FROM imaging_records WHERE id=?", (rid,))
         row_data = c.fetchone()
         conn.close()
         if row_data:
@@ -4902,37 +4988,45 @@ class DetailPanel(QWidget):
             self.record_content_browser.setHtml(html)
 
     def _add_record(self):
-        record_type = getattr(self, '_current_record_type', 'medical')
-        dlg = _RichTextEditorDialog(
-            self, record_type=record_type,
-            disease_id=self.current_disease_id,
-            active_db=self.active_db,
-            user_password=self.user_password
-        )
-        dlg._new_record()  # 自动新建一条笔记
-        dlg.exec_()
+        """添加新记录并进入编辑模式"""
+        if not self.current_disease_id:
+            QMessageBox.warning(self, '提示', '请先选择一个疾病')
+            return
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self._current_record_type == 'medical':
+            c.execute("INSERT INTO medical_records (disease_id, title, content) VALUES (?, ?, ?)",
+                      (self.current_disease_id, '新建笔记', ''))
+        elif self._current_record_type == 'anatomy':
+            c.execute("INSERT INTO anatomy_records (title, content) VALUES (?, ?)",
+                      ('新建笔记', ''))
+        else:  # imaging
+            c.execute("INSERT INTO imaging_records (disease_id, title, content) VALUES (?, ?, ?)",
+                      (self.current_disease_id, '新建笔记', ''))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        # 刷新列表
         self._refresh_content()
+        # 在列表中选中新建的记录
+        for i in range(self.record_list.count()):
+            if self.record_list.item(i).data(Qt.UserRole) == new_id:
+                self.record_list.setCurrentRow(i)
+                break
+        # 进入编辑模式
+        self._enter_edit_mode(record_id=new_id)
 
     def _edit_record(self):
-        record_type = getattr(self, '_current_record_type', 'medical')
-        dlg = _RichTextEditorDialog(
-            self, record_type=record_type,
-            disease_id=self.current_disease_id,
-            active_db=self.active_db,
-            user_password=self.user_password
-        )
-        # 如果有选中的笔记，在编辑器中选中它
+        """编辑选中的记录 - 进入内嵌编辑模式"""
         current_item = self.record_list.currentItem()
-        if current_item:
-            rid = current_item.data(Qt.UserRole)
-            for i in range(dlg.note_list.count()):
-                if dlg.note_list.item(i).data(Qt.UserRole) == rid:
-                    dlg.note_list.setCurrentRow(i)
-                    break
-        dlg.exec_()
-        self._refresh_content()
+        if not current_item:
+            QMessageBox.warning(self, '提示', '请先选择要编辑的笔记')
+            return
+        rid = current_item.data(Qt.UserRole)
+        self._enter_edit_mode(record_id=rid)
 
     def _delete_record(self):
+        """删除选中的记录"""
         current_item = self.record_list.currentItem()
         if not current_item:
             QMessageBox.warning(self, '提示', '请先选择要删除的笔记')
@@ -4944,13 +5038,14 @@ class DetailPanel(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            record_type = getattr(self, '_current_record_type', 'medical')
             conn = sqlite3.connect(self.active_db)
             c = conn.cursor()
-            if record_type == 'medical':
+            if self._current_record_type == 'medical':
                 c.execute("DELETE FROM medical_records WHERE id=?", (rid,))
-            else:
+            elif self._current_record_type == 'anatomy':
                 c.execute("DELETE FROM anatomy_records WHERE id=?", (rid,))
+            else:  # imaging
+                c.execute("DELETE FROM imaging_records WHERE id=?", (rid,))
             conn.commit()
             conn.close()
             self._refresh_content()
@@ -5462,7 +5557,7 @@ class MainWindow(QMainWindow):
             'clinical': row[4], 'diagnosis': row[5],
             'xray_finding': row[6], 'ct_finding': row[7], 'mri_finding': row[8], 'pet_finding': row[9],
             'report_template': row[10], 'differential_diagnosis': row[11], 'treatment': row[12],
-            'images': [], 'medical_records': [], 'anatomy_records': []
+            'images': [], 'medical_records': [], 'anatomy_records': [], 'imaging_records': []
         }
         # 影像图片
         c.execute("SELECT id, filename, image_type, caption, media_type FROM images WHERE disease_id=?", (disease_id,))
@@ -5499,6 +5594,9 @@ class MainWindow(QMainWindow):
         # 解剖资料
         c.execute("SELECT title, content FROM anatomy_records")
         data['anatomy_records'] = [{'title': r[0], 'content': r[1]} for r in c.fetchall()]
+        # 影像资料
+        c.execute("SELECT title, content FROM imaging_records WHERE disease_id=?", (disease_id,))
+        data['imaging_records'] = [{'title': r[0], 'content': r[1]} for r in c.fetchall()]
         conn.close()
         return data
 
@@ -5584,7 +5682,7 @@ class MainWindow(QMainWindow):
         fmt_label.setStyleSheet("color: #aaa; padding: 8px;")
         flayout.addWidget(fmt_label)
         fmt_combo = QComboBox()
-        fmt_combo.addItems(['Word 文档 (.docx)', 'PDF 文档 (.pdf)'])
+        fmt_combo.addItems(['Word 文档 (.docx)', 'PDF 文档 (.pdf)', 'PowerPoint 演示文稿 (.pptx)'])
         fmt_combo.setFixedHeight(30)
         flayout.addWidget(fmt_combo)
 
@@ -5622,7 +5720,8 @@ class MainWindow(QMainWindow):
         format_dlg.setStyleSheet(self.styleSheet())
         if format_dlg.exec_() != QDialog.Accepted:
             return
-        fmt = 'docx' if fmt_combo.currentIndex() == 0 else 'pdf'
+        fmt_map = {0: 'docx', 1: 'pdf', 2: 'pptx'}
+        fmt = fmt_map.get(fmt_combo.currentIndex(), 'docx')
         # 选择保存路径
         username = self.user_info.get('username', '') if self.user_info else ''
         if len(disease_ids) == 1:
@@ -5642,7 +5741,8 @@ class MainWindow(QMainWindow):
             default_name = f'{name_part}_{datetime.now().strftime("%Y%m%d")}.{fmt}'
         else:
             default_name = f'批量导出_{username}_{datetime.now().strftime("%Y%m%d")}.{fmt}'
-        ext_filter = f'Word 文档 (*.{fmt})' if fmt == 'docx' else f'PDF 文档 (*.{fmt})'
+        ext_filter_map = {'docx': 'Word 文档 (*.docx)', 'pdf': 'PDF 文档 (*.pdf)', 'pptx': 'PowerPoint 演示文稿 (*.pptx)'}
+        ext_filter = ext_filter_map.get(fmt, f'文件 (*.{fmt})')
         save_path, _ = QFileDialog.getSaveFileName(self, '保存导出文件', default_name, ext_filter)
         if not save_path:
             return
@@ -5659,21 +5759,32 @@ class MainWindow(QMainWindow):
         try:
             if fmt == 'docx':
                 self._export_to_docx(all_data, save_path)
-            else:
+            elif fmt == 'pdf':
                 self._export_to_pdf(all_data, save_path)
+            elif fmt == 'pptx':
+                self._export_to_pptx(all_data, save_path)
 
-            # 加密导出文件
+            # 加密导出文件（使用原生密码保护）
             if encrypt_check.isChecked() and pwd_input.text().strip():
                 try:
-                    enc_key = generate_key(pwd_input.text().strip())
-                    with open(save_path, 'rb') as f:
-                        file_data = f.read()
-                    encrypted_data = encrypt_data(file_data, enc_key)
-                    enc_path = save_path + '.enc'
-                    with open(enc_path, 'wb') as f:
-                        f.write(encrypted_data)
-                    os.remove(save_path)
-                    save_path = enc_path
+                    pwd = pwd_input.text().strip()
+                    if fmt == 'pdf':
+                        import pikepdf
+                        pdf_doc = pikepdf.open(save_path)
+                        pdf_doc.save(save_path, encryption=pikepdf.Encryption(
+                            owner=pwd, user=pwd, R=4
+                        ))
+                        pdf_doc.close()
+                    else:
+                        # docx 和 pptx 使用 msoffcrypto-python
+                        import msoffcrypto
+                        from io import BytesIO
+                        temp_buf = BytesIO()
+                        with open(save_path, 'rb') as f:
+                            file_obj = msoffcrypto.OfficeFile(f)
+                            file_obj.encrypt(password=pwd, outfile=temp_buf)
+                        with open(save_path, 'wb') as f:
+                            f.write(temp_buf.getvalue())
                 except Exception as enc_err:
                     QMessageBox.warning(self, '加密失败', f'文件已导出但加密失败：{enc_err}')
 
@@ -5799,6 +5910,18 @@ class MainWindow(QMainWindow):
             if data['anatomy_records']:
                 doc.add_heading('影像解剖图谱与资料', level=2)
                 for rec in data['anatomy_records']:
+                    doc.add_heading(rec.get('title', '无标题'), level=3)
+                    import re
+                    text = re.sub(r'<[^>]+>', '', rec.get('content', ''))
+                    text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
+                    for para_text in text.split('\n'):
+                        if para_text.strip():
+                            doc.add_paragraph(para_text.strip())
+
+            # 影像资料
+            if data['imaging_records']:
+                doc.add_heading('影像所见与资料', level=2)
+                for rec in data['imaging_records']:
                     doc.add_heading(rec.get('title', '无标题'), level=3)
                     import re
                     text = re.sub(r'<[^>]+>', '', rec.get('content', ''))
@@ -5974,7 +6097,216 @@ class MainWindow(QMainWindow):
                             line = line.strip().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                             elements.append(Paragraph(line, body_style))
 
+            # 影像资料
+            if data['imaging_records']:
+                elements.append(Paragraph('影像所见与资料', h2_style))
+                for rec in data['imaging_records']:
+                    elements.append(Paragraph(rec.get('title', '无标题'), h3_style))
+                    text = re.sub(r'<[^>]+>', '', rec.get('content', ''))
+                    text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
+                    text = text.replace('&amp;', '&')
+                    for line in text.split('\n'):
+                        if line.strip():
+                            line = line.strip().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                            elements.append(Paragraph(line, body_style))
+
         doc.build(elements)
+
+    def _export_to_pptx(self, all_data, save_path):
+        """导出为PowerPoint演示文稿"""
+        from pptx import Presentation
+        from pptx.util import Inches, Pt, Emu
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+        import re
+
+        prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+
+        DARK_BLUE = RGBColor(0x1F, 0x4E, 0xA3)
+        LIGHT_BLUE = RGBColor(0xE8, 0xEF, 0xF7)
+        BODY_COLOR = RGBColor(0x33, 0x33, 0x33)
+        CAPTION_COLOR = RGBColor(0x66, 0x66, 0x66)
+
+        def _add_text_box(slide, left, top, width, height, text, font_size=14,
+                          bold=False, color=BODY_COLOR, alignment=PP_ALIGN.LEFT,
+                          font_name='SimSun'):
+            txBox = slide.shapes.add_textbox(left, top, width, height)
+            tf = txBox.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = text
+            p.font.size = Pt(font_size)
+            p.font.bold = bold
+            p.font.color.rgb = color
+            p.font.name = font_name
+            p.alignment = alignment
+            if font_name == 'Microsoft YaHei':
+                from pptx.oxml.ns import qn
+                rPr = p.runs[0]._r.get_or_add_rPr()
+                rPr.set(qn('a:ea'), font_name)
+            return tf
+
+        def _add_content_slide(title_text, body_text):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+            # 标题
+            _add_text_box(slide, Inches(0.8), Inches(0.4), Inches(11.7), Inches(0.8),
+                          title_text, font_size=28, bold=True, color=DARK_BLUE,
+                          font_name='Microsoft YaHei')
+            # 分隔线
+            from pptx.util import Emu as _Emu
+            line = slide.shapes.add_shape(
+                1, Inches(0.8), Inches(1.3), Inches(11.7), Pt(2)
+            )
+            line.fill.solid()
+            line.fill.fore_color.rgb = DARK_BLUE
+            line.line.fill.background()
+            # 正文
+            if body_text and body_text.strip():
+                clean = re.sub(r'<[^>]+>', '', body_text)
+                clean = clean.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+                lines = [l.strip() for l in clean.split('\n') if l.strip()]
+                txBox = slide.shapes.add_textbox(Inches(0.8), Inches(1.6), Inches(11.7), Inches(5.4))
+                tf = txBox.text_frame
+                tf.word_wrap = True
+                for i, line in enumerate(lines):
+                    if i == 0:
+                        p = tf.paragraphs[0]
+                    else:
+                        p = tf.add_paragraph()
+                    p.text = line
+                    p.font.size = Pt(14)
+                    p.font.color.rgb = BODY_COLOR
+                    p.font.name = 'SimSun'
+                    p.space_after = Pt(4)
+            return slide
+
+        for idx, data in enumerate(all_data):
+            # ── 标题幻灯片 ──
+            slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+            # 背景色块
+            bg_shape = slide.shapes.add_shape(1, Inches(0), Inches(0), prs.slide_width, Inches(4.2))
+            bg_shape.fill.solid()
+            bg_shape.fill.fore_color.rgb = DARK_BLUE
+            bg_shape.line.fill.background()
+            # 疾病中文名
+            name_cn = data.get('name_cn', '') or '未命名疾病'
+            _add_text_box(slide, Inches(1.5), Inches(1.2), Inches(10.3), Inches(1.5),
+                          name_cn, font_size=40, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF),
+                          alignment=PP_ALIGN.CENTER, font_name='Microsoft YaHei')
+            # 英文名
+            name_en = data.get('name_en', '')
+            if name_en:
+                _add_text_box(slide, Inches(1.5), Inches(2.7), Inches(10.3), Inches(0.8),
+                              name_en, font_size=20, color=RGBColor(0xCC, 0xDD, 0xFF),
+                              alignment=PP_ALIGN.CENTER)
+            # 副标题
+            subtitle = f'{data.get("system", "")} | {data.get("category", "")}'
+            _add_text_box(slide, Inches(1.5), Inches(4.8), Inches(10.3), Inches(0.6),
+                          subtitle, font_size=16, color=CAPTION_COLOR,
+                          alignment=PP_ALIGN.CENTER)
+
+            # ── 基本信息幻灯片 ──
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            _add_text_box(slide, Inches(0.8), Inches(0.4), Inches(11.7), Inches(0.8),
+                          '基本信息', font_size=28, bold=True, color=DARK_BLUE,
+                          font_name='Microsoft YaHei')
+            info_rows = [
+                ['系统', data.get('system', ''), '分类', data.get('category', '')],
+                ['中文名', data.get('name_cn', ''), '英文名', data.get('name_en', '')],
+            ]
+            table_shape = slide.shapes.add_table(2, 4, Inches(1.5), Inches(1.6), Inches(10.3), Inches(1.2))
+            table = table_shape.table
+            for r, row_data in enumerate(info_rows):
+                for c, val in enumerate(row_data):
+                    cell = table.cell(r, c)
+                    cell.text = val or ''
+                    for p in cell.text_frame.paragraphs:
+                        p.font.size = Pt(14)
+                        p.font.name = 'SimSun'
+                        if c % 2 == 0:
+                            p.font.bold = True
+                            p.font.color.rgb = DARK_BLUE
+                        else:
+                            p.font.color.rgb = BODY_COLOR
+                    if c % 2 == 0:
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = LIGHT_BLUE
+
+            # ── 内容幻灯片 ──
+            sections = [
+                ('临床表现', 'clinical'),
+                ('诊断要点', 'diagnosis'),
+                ('影像所见 - X线', 'xray_finding'),
+                ('影像所见 - CT', 'ct_finding'),
+                ('影像所见 - MRI', 'mri_finding'),
+                ('影像所见 - PET', 'pet_finding'),
+                ('报告模板', 'report_template'),
+                ('鉴别诊断', 'differential_diagnosis'),
+                ('治疗', 'treatment'),
+            ]
+            for sec_title, sec_key in sections:
+                content = data.get(sec_key, '')
+                if content and content.strip():
+                    _add_content_slide(sec_title, content)
+
+            # ── 图片幻灯片 ──
+            if data['images']:
+                for img in data['images']:
+                    if img['path'] and os.path.exists(img['path']):
+                        slide = prs.slides.add_slide(prs.slide_layouts[6])
+                        try:
+                            from PIL import Image as PILImage
+                            pil_img = PILImage.open(img['path'])
+                            w, h = pil_img.size
+                            max_w, max_h = 9.0, 5.0
+                            ratio = min(max_w / (w / 96), max_h / (h / 96))
+                            img_w = (w / 96) * ratio
+                            img_h = (h / 96) * ratio
+                            left = (13.333 - img_w) / 2
+                            slide.shapes.add_picture(img['path'],
+                                                     Inches(left), Inches(0.5),
+                                                     Inches(img_w), Inches(img_h))
+                        except Exception:
+                            _add_text_box(slide, Inches(2), Inches(2.5), Inches(9), Inches(1),
+                                          f'[图片无法加载: {img.get("filename", "")}]',
+                                          font_size=14, color=CAPTION_COLOR)
+                        caption_parts = []
+                        if img.get('image_type'):
+                            caption_parts.append(img['image_type'])
+                        if img.get('caption'):
+                            caption_parts.append(img['caption'])
+                        if caption_parts:
+                            _add_text_box(slide, Inches(1), Inches(6.2), Inches(11.3), Inches(0.5),
+                                          ' - '.join(caption_parts), font_size=12,
+                                          color=CAPTION_COLOR, alignment=PP_ALIGN.CENTER)
+
+            # ── 医学资料幻灯片 ──
+            if data['medical_records']:
+                for rec in data['medical_records']:
+                    slide = _add_content_slide(
+                        f'医学资料 - {rec.get("title", "无标题")}',
+                        rec.get('content', '')
+                    )
+
+            # ── 解剖资料幻灯片 ──
+            if data['anatomy_records']:
+                for rec in data['anatomy_records']:
+                    slide = _add_content_slide(
+                        f'影像解剖图谱 - {rec.get("title", "无标题")}',
+                        rec.get('content', '')
+                    )
+
+            # ── 影像资料幻灯片 ──
+            if data['imaging_records']:
+                for rec in data['imaging_records']:
+                    slide = _add_content_slide(
+                        f'影像资料 - {rec.get("title", "无标题")}',
+                        rec.get('content', '')
+                    )
+
+        prs.save(save_path)
 
     def do_logout(self):
         self.close()

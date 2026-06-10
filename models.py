@@ -274,6 +274,10 @@ def init_db(db_path=None):
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   title TEXT, content TEXT,
                   image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS imaging_records
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  disease_id INTEGER, title TEXT, content TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     try:
         c.execute("ALTER TABLE images ADD COLUMN media_type TEXT")
     except sqlite3.OperationalError:
@@ -455,6 +459,7 @@ def delete_disease(db_path, disease_id):
     c = conn.cursor()
     c.execute("DELETE FROM images WHERE disease_id=?", (disease_id,))
     c.execute("DELETE FROM medical_records WHERE disease_id=?", (disease_id,))
+    c.execute("DELETE FROM imaging_records WHERE disease_id=?", (disease_id,))
     c.execute("DELETE FROM diseases WHERE id=?", (disease_id,))
     conn.commit()
     conn.close()
@@ -502,6 +507,10 @@ def init_db(db_path=None):
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   title TEXT, content TEXT,
                   image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS imaging_records
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  disease_id INTEGER, title TEXT, content TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     try:
         c.execute("ALTER TABLE images ADD COLUMN media_type TEXT")
     except sqlite3.OperationalError:
