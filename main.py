@@ -4326,15 +4326,36 @@ class DetailPanel(QWidget):
         tab_bar.setSpacing(0)
 
         self.tab_buttons = []
+        self.tab_detach_btns = []
+        self._detached_windows = {}
         tab_names = ['临床与诊断', '标准报告模板', '影像所见与资料', '医学资料', '影像解剖图谱与资料']
         for i, name in enumerate(tab_names):
+            # 标签按钮容器
+            tab_item = QWidget()
+            tab_item_layout = QHBoxLayout(tab_item)
+            tab_item_layout.setContentsMargins(0, 0, 0, 0)
+            tab_item_layout.setSpacing(0)
             btn = QPushButton(name)
             btn.setObjectName('tabBtn')
             btn.setProperty('active', i == 0)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda checked, idx=i: self.switch_tab(idx))
             self.tab_buttons.append(btn)
-            tab_bar.addWidget(btn)
+            tab_item_layout.addWidget(btn)
+            # 脱离按钮
+            detach_btn = QPushButton('⧉')
+            detach_btn.setFixedSize(20, 20)
+            detach_btn.setFont(QFont("Microsoft YaHei", 9))
+            detach_btn.setCursor(Qt.PointingHandCursor)
+            detach_btn.setToolTip('脱离为独立窗口')
+            detach_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; color: #666670; border-radius: 3px; }
+                QPushButton:hover { background: rgba(255,255,255,20); color: #c8c8cc; }
+            """)
+            detach_btn.clicked.connect(lambda checked, idx=i: self._detach_tab(idx))
+            self.tab_detach_btns.append(detach_btn)
+            tab_item_layout.addWidget(detach_btn)
+            tab_bar.addWidget(tab_item)
 
         layout.addLayout(tab_bar)
 
@@ -4359,10 +4380,29 @@ class DetailPanel(QWidget):
         record_list_layout = QVBoxLayout(self.record_list_panel)
         record_list_layout.setContentsMargins(0, 0, 0, 0)
         record_list_layout.setSpacing(0)
-        record_list_header = QLabel('  笔记列表')
+        # 笔记列表标题栏：标题 + 菜单按钮
+        record_list_header = QWidget()
         record_list_header.setFixedHeight(32)
-        record_list_header.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
         record_list_header.setStyleSheet("background: transparent; border-bottom: 1px solid #2a2a30;")
+        header_hl = QHBoxLayout(record_list_header)
+        header_hl.setContentsMargins(8, 0, 4, 0)
+        header_hl.setSpacing(0)
+        header_label = QLabel('笔记列表')
+        header_label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        header_label.setStyleSheet("background: transparent;")
+        header_hl.addWidget(header_label)
+        header_hl.addStretch()
+        # 菜单按钮（⋮）
+        self.record_menu_btn = QPushButton('⋮')
+        self.record_menu_btn.setFixedSize(28, 28)
+        self.record_menu_btn.setFont(QFont("Microsoft YaHei", 14))
+        self.record_menu_btn.setCursor(Qt.PointingHandCursor)
+        self.record_menu_btn.setStyleSheet("""
+            QPushButton { background: transparent; border: none; color: #888890; border-radius: 4px; }
+            QPushButton:hover { background: rgba(255,255,255,20); color: #c8c8cc; }
+        """)
+        self.record_menu_btn.clicked.connect(self._show_record_menu)
+        header_hl.addWidget(self.record_menu_btn)
         record_list_layout.addWidget(record_list_header)
         self.record_list = QListWidget()
         self.record_list.currentRowChanged.connect(self._on_record_list_clicked)
@@ -4373,7 +4413,7 @@ class DetailPanel(QWidget):
             QListWidget::item:hover { background-color: rgba(255,255,255,10); }
         """)
         record_list_layout.addWidget(self.record_list)
-        self.record_list_panel.setFixedWidth(200)
+        self.record_list_panel.setFixedWidth(160)
         self.record_splitter.addWidget(self.record_list_panel)
 
         # 右侧内容：堆叠组件（查看模式 / 编辑模式）
@@ -4423,12 +4463,16 @@ class DetailPanel(QWidget):
         # 内嵌格式化工具栏
         self._build_inline_toolbar(edit_layout)
 
-        # 内嵌富文本编辑器
+        # 内嵌富文本编辑器（包裹在 QScrollArea 中以支持滚动）
         self.inline_text_edit = QTextEdit()
         self.inline_text_edit.setAcceptRichText(True)
         self.inline_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         self.inline_text_edit.customContextMenuRequested.connect(self._show_inline_context_menu)
-        edit_layout.addWidget(self.inline_text_edit, stretch=1)
+        edit_scroll = QScrollArea()
+        edit_scroll.setWidget(self.inline_text_edit)
+        edit_scroll.setWidgetResizable(True)
+        edit_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        edit_layout.addWidget(edit_scroll, stretch=1)
 
         self.record_stack.addWidget(edit_widget)
 
@@ -4437,32 +4481,6 @@ class DetailPanel(QWidget):
         self.record_splitter.setStretchFactor(1, 1)
         self.record_splitter.hide()
         layout.addWidget(self.record_splitter)
-
-        # 记录操作栏（影像所见、医学资料、影像解剖共用）
-        self.record_action_bar = QWidget()
-        record_action_layout = QHBoxLayout(self.record_action_bar)
-        record_action_layout.setContentsMargins(8, 4, 8, 4)
-        record_action_layout.setSpacing(8)
-
-        self.btn_add_record = QPushButton('添加图文')
-        self.btn_add_record.setFixedHeight(32)
-        self.btn_add_record.clicked.connect(self._add_record)
-        record_action_layout.addWidget(self.btn_add_record)
-
-        self.btn_edit_record = QPushButton('编辑选中')
-        self.btn_edit_record.setFixedHeight(32)
-        self.btn_edit_record.clicked.connect(self._edit_record)
-        record_action_layout.addWidget(self.btn_edit_record)
-
-        self.btn_delete_record = QPushButton('删除选中')
-        self.btn_delete_record.setFixedHeight(32)
-        self.btn_delete_record.setObjectName('dangerBtn')
-        self.btn_delete_record.clicked.connect(self._delete_record)
-        record_action_layout.addWidget(self.btn_delete_record)
-
-        record_action_layout.addStretch()
-        self.record_action_bar.hide()
-        layout.addWidget(self.record_action_bar)
 
         # 存储当前影像页面的图片列表（用于双击浏览）
         self._current_image_list = []
@@ -4594,6 +4612,27 @@ class DetailPanel(QWidget):
         tb.addWidget(btn_code)
 
         parent_layout.addWidget(toolbar_widget)
+
+    def _show_record_menu(self):
+        """显示笔记列表操作菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; padding: 4px; }
+            QMenu::item { padding: 6px 24px; border-radius: 4px; }
+            QMenu::item:selected { background-color: #3f7bf7; }
+        """)
+        act_add = menu.addAction('添加笔记')
+        act_edit = menu.addAction('编辑选中')
+        menu.addSeparator()
+        act_delete = menu.addAction('删除选中')
+        action = menu.exec_(self.record_menu_btn.mapToGlobal(
+            QPoint(self.record_menu_btn.width(), 0)))
+        if action == act_add:
+            self._add_record()
+        elif action == act_edit:
+            self._edit_record()
+        elif action == act_delete:
+            self._delete_record()
 
     # ── 内嵌编辑器格式化操作 ──
     def _inline_set_heading(self, idx):
@@ -4832,11 +4871,10 @@ class DetailPanel(QWidget):
             btn.style().polish(btn)
         # 临床与诊断、标准报告模板使用 content_browser
         is_simple = (idx == 0 or idx == 1)
-        # 影像所见、医学资料、影像解剖使用 record_splitter + record_action_bar
+        # 影像所见、医学资料、影像解剖使用 record_splitter
         is_record = (idx == 2 or idx == 3 or idx == 4)
         self.content_browser.setVisible(is_simple)
         self.record_splitter.setVisible(is_record)
-        self.record_action_bar.setVisible(is_record)
         self._refresh_content()
 
     def load_disease(self, disease_id, db_path):
@@ -4899,12 +4937,40 @@ class DetailPanel(QWidget):
         self.content_browser.setHtml(html)
 
     def _show_imaging_tab(self):
-        """影像所见与资料标签页 - 使用记录列表方式"""
+        """影像所见与资料标签页 - 使用记录列表方式，顶部显示疾病影像所见"""
         self._current_record_type = 'imaging'
         self.record_list.clear()
         if not self.current_disease_id:
             self.record_content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
             return
+        # 在列表顶部添加疾病影像所见条目
+        d = self.disease_data
+        imaging_findings = [
+            ('X线所见', 'xray_finding', '🔬'),
+            ('CT所见', 'ct_finding', '🖥'),
+            ('MRI所见', 'mri_finding', '🧲'),
+            ('PET所见', 'pet_finding', '⚛'),
+        ]
+        has_finding = False
+        for label, field_key, icon in imaging_findings:
+            text = (d or {}).get(field_key, '') or ''
+            if text.strip():
+                has_finding = True
+                item = QListWidgetItem(f'{icon} {label}')
+                item.setData(Qt.UserRole, f'__finding__{field_key}')
+                item.setData(Qt.UserRole + 1, label)
+                item.setData(Qt.UserRole + 2, text)
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                self.record_list.addItem(item)
+        # 添加分隔条目
+        if has_finding:
+            sep_item = QListWidgetItem('── 笔记记录 ──')
+            sep_item.setFlags(Qt.NoItemFlags)
+            sep_item.setTextAlignment(Qt.AlignCenter)
+            self.record_list.addItem(sep_item)
+        # 加载影像记录
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         c.execute("SELECT id, title, content FROM imaging_records WHERE disease_id=? ORDER BY id DESC",
@@ -4912,13 +4978,13 @@ class DetailPanel(QWidget):
         rows = c.fetchall()
         conn.close()
         self._current_records = [(r[0], r[1], r[2]) for r in rows]
-        if not rows:
-            self.record_content_browser.setHtml('<p style="color:#666;">暂无影像资料，点击"添加图文"创建</p>')
-            return
         for rid, title, content in rows:
             item = QListWidgetItem(title or '无标题')
             item.setData(Qt.UserRole, rid)
             self.record_list.addItem(item)
+        if not has_finding and not rows:
+            self.record_content_browser.setHtml('<p style="color:#666;">暂无影像资料，点击笔记列表标题栏菜单中的"添加笔记"创建</p>')
+            return
         self.record_list.setCurrentRow(0)
 
     def _show_medical_tab(self):
@@ -4971,6 +5037,14 @@ class DetailPanel(QWidget):
         if not item:
             return
         rid = item.data(Qt.UserRole)
+        # 检查是否为影像所见特殊条目
+        if isinstance(rid, str) and rid.startswith('__finding__'):
+            label = item.data(Qt.UserRole + 1) or ''
+            text = item.data(Qt.UserRole + 2) or ''
+            html = f'<h2 style="color:#5a91ff; margin-bottom:12px;">{label}</h2>'
+            html += f'<div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{text}</div>'
+            self.record_content_browser.setHtml(html)
+            return
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         if self._current_record_type == 'medical':
@@ -5023,6 +5097,10 @@ class DetailPanel(QWidget):
             QMessageBox.warning(self, '提示', '请先选择要编辑的笔记')
             return
         rid = current_item.data(Qt.UserRole)
+        # 影像所见特殊条目不可编辑
+        if isinstance(rid, str) and rid.startswith('__finding__'):
+            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，请在疾病编辑中修改')
+            return
         self._enter_edit_mode(record_id=rid)
 
     def _delete_record(self):
@@ -5032,6 +5110,10 @@ class DetailPanel(QWidget):
             QMessageBox.warning(self, '提示', '请先选择要删除的笔记')
             return
         rid = current_item.data(Qt.UserRole)
+        # 影像所见特殊条目不可删除
+        if isinstance(rid, str) and rid.startswith('__finding__'):
+            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，不可删除')
+            return
         title = current_item.text()
         reply = QMessageBox.question(
             self, '确认删除', f'确定要删除笔记"{title}"吗？',
@@ -5049,6 +5131,464 @@ class DetailPanel(QWidget):
             conn.commit()
             conn.close()
             self._refresh_content()
+
+    def _detach_tab(self, tab_idx):
+        """将指定标签页脱离为独立窗口"""
+        if tab_idx in self._detached_windows and self._detached_windows[tab_idx] is not None:
+            # 已脱离，激活窗口
+            w = self._detached_windows[tab_idx]
+            w.showNormal()
+            w.activateWindow()
+            w.raise_()
+            return
+        tab_names = ['临床与诊断', '标准报告模板', '影像所见与资料', '医学资料', '影像解剖图谱与资料']
+        title = tab_names[tab_idx] if tab_idx < len(tab_names) else '详情'
+        if self.disease_data:
+            title += f' - {self.disease_data.get("name_cn", "")}'
+        dialog = _DetachedTabWindow(self, tab_idx, title, self.current_disease_id,
+                                     self.active_db, self.disease_data,
+                                     self.user_info, self.user_password)
+        dialog._on_close_callback = lambda idx=tab_idx: self._on_detached_closed(idx)
+        self._detached_windows[tab_idx] = dialog
+        # 隐藏对应的标签按钮
+        self.tab_buttons[tab_idx].setEnabled(False)
+        self.tab_detach_btns[tab_idx].setText('↩')
+        self.tab_detach_btns[tab_idx].setToolTip('窗口已脱离')
+        dialog.show()
+        # 如果当前显示的是被脱离的标签，切换到第一个可用标签
+        if self.current_tab == tab_idx:
+            for i in range(len(self.tab_buttons)):
+                if self.tab_buttons[i].isEnabled():
+                    self.switch_tab(i)
+                    break
+
+    def _on_detached_closed(self, tab_idx):
+        """脱离窗口关闭后恢复标签按钮"""
+        if tab_idx in self._detached_windows:
+            self._detached_windows[tab_idx] = None
+        if tab_idx < len(self.tab_buttons):
+            self.tab_buttons[tab_idx].setEnabled(True)
+            self.tab_detach_btns[tab_idx].setText('⧉')
+            self.tab_detach_btns[tab_idx].setToolTip('脱离为独立窗口')
+
+
+class _DetachedTabWindow(QDialog):
+    """脱离主窗口的独立标签窗口"""
+    def __init__(self, parent_panel, tab_idx, title, disease_id, db_path, disease_data,
+                 user_info=None, user_password=None):
+        super().__init__(parent_panel)
+        self.tab_idx = tab_idx
+        self.disease_id = disease_id
+        self.active_db = db_path
+        self.disease_data = disease_data
+        self.user_info = user_info
+        self.user_password = user_password
+        self._is_edit_mode = False
+        self._editing_record_id = None
+        self._current_record_type = 'medical'
+        self._current_records = []
+
+        self.setWindowTitle(title)
+        self.resize(800, 600)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, title)
+        layout.addWidget(self.title_bar)
+
+        # 内容区域
+        if tab_idx <= 1:
+            # 临床与诊断 / 标准报告模板：简单文本浏览
+            self.content_browser = QTextBrowser()
+            self.content_browser.setOpenExternalLinks(True)
+            self.content_browser.setStyleSheet("border: none; padding: 16px;")
+            layout.addWidget(self.content_browser)
+            self._load_simple_content()
+        else:
+            # 影像所见 / 医学资料 / 影像解剖：列表+内容
+            self._build_record_panel(layout)
+            if tab_idx == 2:
+                self._current_record_type = 'imaging'
+            elif tab_idx == 3:
+                self._current_record_type = 'medical'
+            else:
+                self._current_record_type = 'anatomy'
+            self._load_records()
+
+    def _load_simple_content(self):
+        """加载简单文本内容（临床与诊断、标准报告模板）"""
+        d = self.disease_data
+        if not d:
+            self.content_browser.setHtml('<p style="color:#666;">无数据</p>')
+            return
+        if self.tab_idx == 0:
+            html = f'''
+            <h1 style="color:#3f7bf7; margin-bottom:4px;">{d.get("name_cn","")}</h1>
+            <p style="color:#888890; font-style:italic; margin-top:0;">{d.get("name_en","")}</p>
+            <p style="color:#888890;">系统: {d.get("system","")} &nbsp;|&nbsp; 分类: {d.get("category","")}</p>
+            <hr style="border:1px solid #2a2a30;">
+            <h2 style="color:#5a91ff;">临床表现</h2>
+            <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("clinical","")}</div>
+            <h2 style="color:#5a91ff;">诊断要点</h2>
+            <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("diagnosis","")}</div>
+            <h2 style="color:#5a91ff;">鉴别诊断</h2>
+            <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("differential_diagnosis","")}</div>
+            <h2 style="color:#5a91ff;">治疗原则</h2>
+            <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("treatment","")}</div>
+            '''
+        else:
+            html = f'''
+            <h2 style="color:#5a91ff;">影像报告模板</h2>
+            <div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{d.get("report_template","")}</div>
+            '''
+        self.content_browser.setHtml(html)
+
+    def _build_record_panel(self, parent_layout):
+        """构建记录面板（列表+内容+编辑）"""
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setStyleSheet("QSplitter::handle { background: #2a2a30; width: 1px; }")
+
+        # 左侧列表
+        list_panel = QWidget()
+        list_layout = QVBoxLayout(list_panel)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(0)
+        # 标题栏 + 菜单
+        header = QWidget()
+        header.setFixedHeight(32)
+        header.setStyleSheet("background: transparent; border-bottom: 1px solid #2a2a30;")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(8, 0, 4, 0)
+        hl.setSpacing(0)
+        hl.addWidget(QLabel('笔记列表'))
+        hl.addStretch()
+        menu_btn = QPushButton('⋮')
+        menu_btn.setFixedSize(28, 28)
+        menu_btn.setFont(QFont("Microsoft YaHei", 14))
+        menu_btn.setCursor(Qt.PointingHandCursor)
+        menu_btn.setStyleSheet("""
+            QPushButton { background: transparent; border: none; color: #888890; border-radius: 4px; }
+            QPushButton:hover { background: rgba(255,255,255,20); color: #c8c8cc; }
+        """)
+        menu_btn.clicked.connect(self._show_record_menu)
+        hl.addWidget(menu_btn)
+        list_layout.addWidget(header)
+
+        self.record_list = QListWidget()
+        self.record_list.currentRowChanged.connect(self._on_record_clicked)
+        self.record_list.setStyleSheet("""
+            QListWidget { border: none; background: transparent; outline: none; }
+            QListWidget::item { padding: 8px 12px; border-bottom: 1px solid #2a2a30; }
+            QListWidget::item:selected { background-color: rgba(63,123,247,40); }
+            QListWidget::item:hover { background-color: rgba(255,255,255,10); }
+        """)
+        list_layout.addWidget(self.record_list)
+        list_panel.setFixedWidth(160)
+        splitter.addWidget(list_panel)
+
+        # 右侧内容
+        self.record_stack = QStackedWidget()
+        # 查看模式
+        self.content_browser = QTextBrowser()
+        self.content_browser.setOpenExternalLinks(True)
+        self.content_browser.setStyleSheet("border: none; padding: 16px;")
+        self.record_stack.addWidget(self.content_browser)
+        # 编辑模式
+        edit_widget = QWidget()
+        edit_layout = QVBoxLayout(edit_widget)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        edit_layout.setSpacing(0)
+        # 编辑标题栏
+        edit_title_bar = QWidget()
+        edit_title_bar.setFixedHeight(50)
+        etl = QHBoxLayout(edit_title_bar)
+        etl.setContentsMargins(12, 8, 12, 8)
+        self.inline_title_input = QLineEdit()
+        self.inline_title_input.setPlaceholderText('输入标题...')
+        self.inline_title_input.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+        etl.addWidget(self.inline_title_input)
+        btn_save = QPushButton('保存')
+        btn_save.setFixedHeight(28)
+        btn_save.setFixedWidth(60)
+        btn_save.setObjectName('accentBtn')
+        btn_save.clicked.connect(lambda: self._exit_edit_mode(save=True))
+        etl.addWidget(btn_save)
+        btn_cancel = QPushButton('取消')
+        btn_cancel.setFixedHeight(28)
+        btn_cancel.setFixedWidth(60)
+        btn_cancel.clicked.connect(lambda: self._exit_edit_mode(save=False))
+        etl.addWidget(btn_cancel)
+        self.save_indicator = QLabel('已保存')
+        self.save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+        etl.addWidget(self.save_indicator)
+        edit_layout.addWidget(edit_title_bar)
+        # 编辑器
+        self.inline_text_edit = QTextEdit()
+        self.inline_text_edit.setAcceptRichText(True)
+        edit_scroll = QScrollArea()
+        edit_scroll.setWidget(self.inline_text_edit)
+        edit_scroll.setWidgetResizable(True)
+        edit_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        edit_layout.addWidget(edit_scroll, stretch=1)
+        self.record_stack.addWidget(edit_widget)
+
+        splitter.addWidget(self.record_stack)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        parent_layout.addWidget(splitter)
+
+    def _load_records(self):
+        """加载记录列表"""
+        self.record_list.clear()
+        if not self.disease_id and self._current_record_type != 'anatomy':
+            self.content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
+            return
+        # 影像所见标签页：添加疾病影像所见
+        if self.tab_idx == 2 and self.disease_data:
+            d = self.disease_data
+            imaging_findings = [
+                ('X线所见', 'xray_finding', '🔬'),
+                ('CT所见', 'ct_finding', '🖥'),
+                ('MRI所见', 'mri_finding', '🧲'),
+                ('PET所见', 'pet_finding', '⚛'),
+            ]
+            has_finding = False
+            for label, field_key, icon in imaging_findings:
+                text = d.get(field_key, '') or ''
+                if text.strip():
+                    has_finding = True
+                    item = QListWidgetItem(f'{icon} {label}')
+                    item.setData(Qt.UserRole, f'__finding__{field_key}')
+                    item.setData(Qt.UserRole + 1, label)
+                    item.setData(Qt.UserRole + 2, text)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    self.record_list.addItem(item)
+            if has_finding:
+                sep_item = QListWidgetItem('── 笔记记录 ──')
+                sep_item.setFlags(Qt.NoItemFlags)
+                sep_item.setTextAlignment(Qt.AlignCenter)
+                self.record_list.addItem(sep_item)
+        # 加载记录
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self._current_record_type == 'medical':
+            c.execute("SELECT id, title, content FROM medical_records WHERE disease_id=? ORDER BY id DESC",
+                      (self.disease_id,))
+        elif self._current_record_type == 'anatomy':
+            c.execute("SELECT id, title, content FROM anatomy_records ORDER BY id DESC")
+        else:
+            c.execute("SELECT id, title, content FROM imaging_records WHERE disease_id=? ORDER BY id DESC",
+                      (self.disease_id,))
+        rows = c.fetchall()
+        conn.close()
+        self._current_records = [(r[0], r[1], r[2]) for r in rows]
+        for rid, title, content in rows:
+            item = QListWidgetItem(title or '无标题')
+            item.setData(Qt.UserRole, rid)
+            self.record_list.addItem(item)
+        if self.record_list.count() > 0:
+            self.record_list.setCurrentRow(0)
+        else:
+            self.content_browser.setHtml('<p style="color:#666;">暂无记录</p>')
+
+    def _on_record_clicked(self, row):
+        """点击记录列表项"""
+        if self._is_edit_mode:
+            return
+        if row < 0:
+            return
+        item = self.record_list.item(row)
+        if not item:
+            return
+        rid = item.data(Qt.UserRole)
+        if isinstance(rid, str) and rid.startswith('__finding__'):
+            label = item.data(Qt.UserRole + 1) or ''
+            text = item.data(Qt.UserRole + 2) or ''
+            html = f'<h2 style="color:#5a91ff; margin-bottom:12px;">{label}</h2>'
+            html += f'<div style="color:#c8c8cc; line-height:1.8; white-space:pre-wrap;">{text}</div>'
+            self.content_browser.setHtml(html)
+            return
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self._current_record_type == 'medical':
+            c.execute("SELECT title, content FROM medical_records WHERE id=?", (rid,))
+        elif self._current_record_type == 'anatomy':
+            c.execute("SELECT title, content FROM anatomy_records WHERE id=?", (rid,))
+        else:
+            c.execute("SELECT title, content FROM imaging_records WHERE id=?", (rid,))
+        row_data = c.fetchone()
+        conn.close()
+        if row_data:
+            title, content = row_data
+            html = f'<h2 style="color:#5a91ff; margin-bottom:12px;">{title or "无标题"}</h2>'
+            html += f'<div style="color:#c8c8cc; line-height:1.8;">{content or ""}</div>'
+            self.content_browser.setHtml(html)
+
+    def _show_record_menu(self):
+        """显示记录操作菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; padding: 4px; }
+            QMenu::item { padding: 6px 24px; border-radius: 4px; }
+            QMenu::item:selected { background-color: #3f7bf7; }
+        """)
+        act_add = menu.addAction('添加笔记')
+        act_edit = menu.addAction('编辑选中')
+        menu.addSeparator()
+        act_delete = menu.addAction('删除选中')
+        action = menu.exec_(self.mapToGlobal(QPoint(100, 50)))
+        if action == act_add:
+            self._add_record()
+        elif action == act_edit:
+            self._edit_record()
+        elif action == act_delete:
+            self._delete_record()
+
+    def _add_record(self):
+        if not self.disease_id and self._current_record_type != 'anatomy':
+            QMessageBox.warning(self, '提示', '请先选择一个疾病')
+            return
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self._current_record_type == 'medical':
+            c.execute("INSERT INTO medical_records (disease_id, title, content) VALUES (?, ?, ?)",
+                      (self.disease_id, '新建笔记', ''))
+        elif self._current_record_type == 'anatomy':
+            c.execute("INSERT INTO anatomy_records (title, content) VALUES (?, ?)",
+                      ('新建笔记', ''))
+        else:
+            c.execute("INSERT INTO imaging_records (disease_id, title, content) VALUES (?, ?, ?)",
+                      (self.disease_id, '新建笔记', ''))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        self._load_records()
+        for i in range(self.record_list.count()):
+            if self.record_list.item(i).data(Qt.UserRole) == new_id:
+                self.record_list.setCurrentRow(i)
+                break
+        self._enter_edit_mode(record_id=new_id)
+
+    def _edit_record(self):
+        current_item = self.record_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, '提示', '请先选择要编辑的笔记')
+            return
+        rid = current_item.data(Qt.UserRole)
+        if isinstance(rid, str) and rid.startswith('__finding__'):
+            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，请在疾病编辑中修改')
+            return
+        self._enter_edit_mode(record_id=rid)
+
+    def _delete_record(self):
+        current_item = self.record_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, '提示', '请先选择要删除的笔记')
+            return
+        rid = current_item.data(Qt.UserRole)
+        if isinstance(rid, str) and rid.startswith('__finding__'):
+            QMessageBox.information(self, '提示', '影像所见为疾病固有字段，不可删除')
+            return
+        title = current_item.text()
+        reply = QMessageBox.question(
+            self, '确认删除', f'确定要删除笔记"{title}"吗？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self._current_record_type == 'medical':
+                c.execute("DELETE FROM medical_records WHERE id=?", (rid,))
+            elif self._current_record_type == 'anatomy':
+                c.execute("DELETE FROM anatomy_records WHERE id=?", (rid,))
+            else:
+                c.execute("DELETE FROM imaging_records WHERE id=?", (rid,))
+            conn.commit()
+            conn.close()
+            self._load_records()
+
+    def _enter_edit_mode(self, record_id=None):
+        self._is_edit_mode = True
+        self._editing_record_id = record_id
+        if record_id:
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self._current_record_type == 'medical':
+                c.execute("SELECT title, content FROM medical_records WHERE id=?", (record_id,))
+            elif self._current_record_type == 'anatomy':
+                c.execute("SELECT title, content FROM anatomy_records WHERE id=?", (record_id,))
+            else:
+                c.execute("SELECT title, content FROM imaging_records WHERE id=?", (record_id,))
+            row_data = c.fetchone()
+            conn.close()
+            if row_data:
+                self.inline_title_input.setText(row_data[0] or '')
+                self.inline_text_edit.setHtml(row_data[1] or '')
+            else:
+                self.inline_title_input.setText('')
+                self.inline_text_edit.setHtml('')
+        else:
+            self.inline_title_input.setText('')
+            self.inline_text_edit.setHtml('')
+        self.save_indicator.setText('编辑中...')
+        self.save_indicator.setStyleSheet("color: #f0a030; font-size: 11px; background: transparent;")
+        self.record_stack.setCurrentIndex(1)
+        self.inline_title_input.setFocus()
+        self.record_list.setEnabled(False)
+
+    def _exit_edit_mode(self, save=True):
+        if save and self._editing_record_id is not None:
+            self._save_current()
+        self._is_edit_mode = False
+        self._editing_record_id = None
+        self.record_stack.setCurrentIndex(0)
+        self.record_list.setEnabled(True)
+        self._load_records()
+
+    def _save_current(self):
+        if self._editing_record_id is None:
+            return
+        title = self.inline_title_input.text().strip() or '无标题'
+        content = self.inline_text_edit.toHtml()
+        try:
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self._current_record_type == 'medical':
+                c.execute("UPDATE medical_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._editing_record_id))
+            elif self._current_record_type == 'anatomy':
+                c.execute("UPDATE anatomy_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._editing_record_id))
+            else:
+                c.execute("UPDATE imaging_records SET title=?, content=? WHERE id=?",
+                          (title, content, self._editing_record_id))
+            conn.commit()
+            conn.close()
+            self.save_indicator.setText('已保存')
+            self.save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
+        except Exception as e:
+            self.save_indicator.setText(f'保存失败: {e}')
+            self.save_indicator.setStyleSheet("color: #e64a3a; font-size: 11px; background: transparent;")
+
+    def keyPressEvent(self, event):
+        if self._is_edit_mode and event.key() == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
+            self._save_current()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        if self._is_edit_mode:
+            self._exit_edit_mode(save=True)
+        if hasattr(self, '_on_close_callback') and self._on_close_callback:
+            self._on_close_callback()
+        super().closeEvent(event)
 
 
 # ── 主窗口 ────────────────────────────────────────────────
