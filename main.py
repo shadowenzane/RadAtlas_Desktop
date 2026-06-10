@@ -405,6 +405,73 @@ class _TitleBtn(QPushButton):
         self.update()
 
 
+class _PinBtn(QPushButton):
+    """图钉按钮 - QPainter 绘制的图钉图标，用于标签页独立显示"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(20, 28)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip('独立显示此标签页')
+        self._hover = False
+        self._pinned = False
+        self._fg_color = QColor(180, 180, 185)
+        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+
+    def set_pinned(self, pinned):
+        """设置图钉状态：pinned=True 表示已脱离为独立窗口"""
+        self._pinned = pinned
+        self.setToolTip('已独立显示' if pinned else '独立显示此标签页')
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+
+        # 背景
+        if self._hover:
+            painter.fillRect(r, QColor(255, 255, 255, 20))
+        else:
+            painter.fillRect(r, Qt.transparent)
+
+        # 图钉图标颜色
+        icon_color = QColor(63, 123, 247) if self._pinned else self._fg_color
+        painter.setPen(QPen(icon_color, 1.5))
+
+        cx = r.center().x()
+        # 图钉头部（圆形/菱形）
+        if self._pinned:
+            # 已固定：实心图钉
+            painter.setBrush(icon_color)
+            painter.drawEllipse(QPointF(cx, r.top() + 8), 4, 4)
+            painter.setBrush(Qt.NoBrush)
+            # 图钉针身
+            painter.drawLine(cx, r.top() + 12, cx, r.bottom() - 4)
+            # 图钉尖端
+            painter.setPen(QPen(icon_color, 1))
+            painter.drawLine(cx - 2, r.bottom() - 6, cx, r.bottom() - 4)
+            painter.drawLine(cx + 2, r.bottom() - 6, cx, r.bottom() - 4)
+        else:
+            # 未固定：空心图钉轮廓
+            painter.drawEllipse(QPointF(cx, r.top() + 8), 4, 4)
+            # 图钉针身
+            painter.drawLine(cx, r.top() + 12, cx, r.bottom() - 4)
+            # 图钉尖端
+            painter.setPen(QPen(icon_color, 1))
+            painter.drawLine(cx - 2, r.bottom() - 6, cx, r.bottom() - 4)
+            painter.drawLine(cx + 2, r.bottom() - 6, cx, r.bottom() - 4)
+
+        painter.end()
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+
 class _CustomTitleBar(QWidget):
     """自定义标题栏，与主题配色一致"""
     return_clicked = pyqtSignal()
@@ -580,11 +647,6 @@ class LoginDialog(QDialog):
         login_btn.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
         login_btn.clicked.connect(self.do_login)
         content.addWidget(login_btn)
-
-        hint = QLabel('默认管理员: admin / admin123')
-        hint.setStyleSheet("color: #555560; font-size: 11px; background: transparent;")
-        hint.setAlignment(Qt.AlignCenter)
-        content.addWidget(hint)
 
         content.addStretch()
 
@@ -3782,6 +3844,16 @@ class _InlineFormatBar(QWidget):
         self.setFocusPolicy(Qt.NoFocus)
         self._hover = False
 
+        # 淡入动画
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._opacity_effect.setOpacity(0)
+        self._show_anim = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._show_anim.setDuration(150)
+        self._show_anim.setStartValue(0.0)
+        self._show_anim.setEndValue(1.0)
+        self._show_anim.setEasingCurve(QEasingCurve.OutCubic)
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(1)
@@ -3871,10 +3943,10 @@ class _InlineFormatBar(QWidget):
         painter.end()
 
     def show_at_selection(self):
-        """在选区上方显示工具栏"""
+        """在选区上方显示工具栏（带淡入动画）"""
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
-            self.hide()
+            self.hide_bar()
             return
         # 获取选区的屏幕坐标
         start_rect = self.editor.cursorRect(cursor.selectionStart())
@@ -3899,8 +3971,12 @@ class _InlineFormatBar(QWidget):
         self.move(pos_x, pos_y)
         self.show()
         self.raise_()
+        self._show_anim.start()
 
     def hide_bar(self):
+        """隐藏工具栏"""
+        self._show_anim.stop()
+        self._opacity_effect.setOpacity(0)
         self.hide()
 
 
@@ -3974,12 +4050,19 @@ class _BlockToolbar(QWidget):
             self.action_triggered.emit(action.data())
 
     def update_position(self):
-        """更新位置到编辑器左侧"""
+        """更新位置到编辑器当前光标行的左侧边距（Trilium Notes 风格）"""
         if not self.editor.isVisible():
             self.hide()
             return
-        editor_pos = self.editor.viewport().mapToGlobal(QPoint(0, 20))
-        self.move(editor_pos.x() - 36, editor_pos.y())
+        cursor = self.editor.textCursor()
+        # 获取当前光标行的矩形
+        cursor_rect = self.editor.cursorRect(cursor)
+        # 行的顶部y坐标，x为编辑器视口左侧
+        line_top = cursor_rect.top()
+        # 转换为全局坐标：x 在编辑器左侧边距外，y 在当前行顶部居中
+        global_pos = self.editor.viewport().mapToGlobal(QPoint(0, line_top))
+        # 放置在编辑器左侧边距位置
+        self.move(global_pos.x() - self.width() - 4, global_pos.y() + (cursor_rect.height() - self.height()) // 2)
         self.show()
         self.raise_()
 
@@ -4664,15 +4747,7 @@ class DetailPanel(QWidget):
             tab_item_layout.setContentsMargins(0, 0, 0, 0)
             tab_item_layout.setSpacing(0)
             # 图钉按钮（单击独立显示）
-            pin_btn = QPushButton('📌')
-            pin_btn.setFixedSize(20, 28)
-            pin_btn.setFont(QFont("Segoe UI Emoji", 8))
-            pin_btn.setCursor(Qt.PointingHandCursor)
-            pin_btn.setToolTip('独立显示此标签页')
-            pin_btn.setStyleSheet("""
-                QPushButton { background: transparent; border: none; color: #666670; border-radius: 3px; }
-                QPushButton:hover { background: rgba(255,255,255,20); color: #c8c8cc; }
-            """)
+            pin_btn = _PinBtn()
             pin_btn.clicked.connect(lambda checked, idx=i: self._detach_tab(idx))
             self.tab_pin_btns.append(pin_btn)
             tab_item_layout.addWidget(pin_btn)
@@ -4698,7 +4773,7 @@ class DetailPanel(QWidget):
         self.content_browser = QTextBrowser()
         self.content_browser.setOpenExternalLinks(True)
         self.content_browser.setStyleSheet("border: none; padding: 16px;")
-        layout.addWidget(self.content_browser)
+        layout.addWidget(self.content_browser, stretch=1)
 
         # 记录标签页（影像所见、医学资料、影像解剖）：左侧列表+右侧内容
         self.record_splitter = QSplitter(Qt.Horizontal)
@@ -4736,6 +4811,7 @@ class DetailPanel(QWidget):
         record_list_layout.addWidget(record_list_header)
         self.record_list = QListWidget()
         self.record_list.currentRowChanged.connect(self._on_record_list_clicked)
+        self.record_list.itemDoubleClicked.connect(self._on_record_list_double_clicked)
         self.record_list.setStyleSheet("""
             QListWidget { border: none; background: transparent; outline: none; }
             QListWidget::item { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,8);
@@ -4824,7 +4900,7 @@ class DetailPanel(QWidget):
         self.record_splitter.setStretchFactor(0, 0)
         self.record_splitter.setStretchFactor(1, 1)
         self.record_splitter.hide()
-        layout.addWidget(self.record_splitter)
+        layout.addWidget(self.record_splitter, stretch=1)
 
         # 存储当前影像页面的图片列表（用于双击浏览）
         self._current_image_list = []
@@ -4851,6 +4927,7 @@ class DetailPanel(QWidget):
         # 连接编辑器信号
         self.inline_text_edit.selectionChanged.connect(self._on_selection_changed)
         self.inline_text_edit.textChanged.connect(self._on_edit_text_changed)
+        self.inline_text_edit.cursorPositionChanged.connect(self._on_cursor_position_changed)
         # 安装事件过滤器以检测图片点击
         self.inline_text_edit.viewport().installEventFilter(self)
         # 安装事件过滤器以支持标签拖动脱离
@@ -4895,6 +4972,11 @@ class DetailPanel(QWidget):
             self.inline_save_indicator.setText('编辑中...')
             self.inline_save_indicator.setStyleSheet("color: #f0a030; font-size: 11px; background: transparent;")
             self._inline_save_timer.start(2000)
+
+    def _on_cursor_position_changed(self):
+        """光标位置变化时更新块工具栏位置"""
+        if self._is_edit_mode:
+            self._block_toolbar.update_position()
 
     def _on_format_action(self, action_id):
         """处理浮动格式栏的动作"""
@@ -5119,17 +5201,34 @@ class DetailPanel(QWidget):
         )
 
     def _show_inline_context_menu(self, pos):
-        """显示内嵌编辑器右键菜单"""
+        """显示内嵌编辑器右键菜单（Trilium Notes 风格增强版）"""
         from PyQt5.QtWidgets import QMenu
         menu = QMenu(self)
-        menu.setStyleSheet("QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; }"
-                          "QMenu::item:selected { background-color: #3f7bf7; }")
+        menu.setStyleSheet("QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; padding: 4px; }"
+                          "QMenu::item { padding: 6px 24px; border-radius: 4px; }"
+                          "QMenu::item:selected { background-color: #3f7bf7; }"
+                          "QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }")
         act_undo = menu.addAction('撤销')
         act_redo = menu.addAction('重做')
         menu.addSeparator()
         act_cut = menu.addAction('剪切')
         act_copy = menu.addAction('复制')
         act_paste = menu.addAction('粘贴')
+        menu.addSeparator()
+        # 格式选项
+        act_bold = menu.addAction('加粗')
+        act_italic = menu.addAction('斜体')
+        act_underline = menu.addAction('下划线')
+        act_strikethrough = menu.addAction('删除线')
+        menu.addSeparator()
+        # 插入选项
+        insert_menu = menu.addMenu('插入')
+        insert_menu.setStyleSheet(menu.styleSheet())
+        act_insert_image = insert_menu.addAction('📷 插入图片')
+        act_insert_table = insert_menu.addAction('📊 插入表格')
+        act_insert_link = insert_menu.addAction('🔗 插入链接')
+        act_insert_hr = insert_menu.addAction('➖ 插入分隔线')
+        act_insert_code = insert_menu.addAction('💻 插入代码块')
         menu.addSeparator()
         act_select_all = menu.addAction('全选')
 
@@ -5144,6 +5243,24 @@ class DetailPanel(QWidget):
             self.inline_text_edit.copy()
         elif action == act_paste:
             self.inline_text_edit.paste()
+        elif action == act_bold:
+            self._inline_toggle_bold()
+        elif action == act_italic:
+            self._inline_toggle_italic()
+        elif action == act_underline:
+            self._inline_toggle_underline()
+        elif action == act_strikethrough:
+            self._inline_toggle_strikethrough()
+        elif action == act_insert_image:
+            self._inline_insert_image()
+        elif action == act_insert_table:
+            self._inline_insert_table()
+        elif action == act_insert_link:
+            self._inline_insert_link()
+        elif action == act_insert_hr:
+            self._inline_insert_hr()
+        elif action == act_insert_code:
+            self._inline_insert_code_block()
         elif action == act_select_all:
             self.inline_text_edit.selectAll()
 
@@ -5419,6 +5536,16 @@ class DetailPanel(QWidget):
             html += f'<div style="color:#c8c8cc; line-height:1.8;">{content or ""}</div>'
             self.record_content_browser.setHtml(html)
 
+    def _on_record_list_double_clicked(self, item):
+        """双击笔记列表项，进入编辑模式"""
+        if self._is_edit_mode:
+            return
+        if not item:
+            return
+        rid = item.data(Qt.UserRole)
+        if rid:
+            self._enter_edit_mode(record_id=rid)
+
     def _add_record(self):
         """添加新记录并进入编辑模式"""
         if not self.current_disease_id:
@@ -5502,8 +5629,7 @@ class DetailPanel(QWidget):
         self._detached_windows[tab_idx] = dialog
         # 更新图钉按钮状态
         self.tab_buttons[tab_idx].setEnabled(False)
-        self.tab_pin_btns[tab_idx].setText('📍')
-        self.tab_pin_btns[tab_idx].setToolTip('已独立显示')
+        self.tab_pin_btns[tab_idx].set_pinned(True)
         dialog.show()
         # 如果当前显示的是被脱离的标签，切换到第一个可用标签
         if self.current_tab == tab_idx:
@@ -5518,8 +5644,7 @@ class DetailPanel(QWidget):
             self._detached_windows[tab_idx] = None
         if tab_idx < len(self.tab_buttons):
             self.tab_buttons[tab_idx].setEnabled(True)
-            self.tab_pin_btns[tab_idx].setText('📌')
-            self.tab_pin_btns[tab_idx].setToolTip('独立显示此标签页')
+            self.tab_pin_btns[tab_idx].set_pinned(False)
 
 
 class _DetachedTabWindow(QDialog):
@@ -5558,7 +5683,7 @@ class _DetachedTabWindow(QDialog):
             self.content_browser = QTextBrowser()
             self.content_browser.setOpenExternalLinks(True)
             self.content_browser.setStyleSheet("border: none; padding: 16px;")
-            layout.addWidget(self.content_browser)
+            layout.addWidget(self.content_browser, stretch=1)
             self._load_simple_content()
         else:
             # 影像所见 / 医学资料 / 影像解剖：列表+内容
