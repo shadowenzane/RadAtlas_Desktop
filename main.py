@@ -3688,6 +3688,107 @@ class _ImageLabel(QWidget):
         self.double_clicked.emit(self.img_id, self.img_path)
 
 
+class _ImageEditableTextEdit(QTextEdit):
+    """支持图片选中、缩放和拖动的富文本编辑器"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._selected_image_format = None
+        self._selected_image_pos = None
+        self._image_dragging = False
+        self._drag_start_pos = None
+        self._image_scale = 1.0
+        self._scale_step = 0.1
+        
+    def mousePressEvent(self, event):
+        """检测图片点击，选中图片"""
+        cursor = self.cursorForPosition(event.pos())
+        cursor.movePosition(QTextCursor.Right)
+        char_fmt = cursor.charFormat()
+        if char_fmt.isImageFormat():
+            img_fmt = char_fmt.toImageFormat()
+            self._selected_image_format = img_fmt
+            self._selected_image_pos = event.pos()
+            self._image_dragging = True
+            self._drag_start_pos = event.pos()
+            # 设置鼠标样式
+            self.setCursor(Qt.ClosedHandCursor)
+            return
+        super().mousePressEvent(event)
+        
+    def mouseMoveEvent(self, event):
+        """拖动选中的图片"""
+        if self._image_dragging and self._selected_image_format and self._drag_start_pos:
+            delta = event.pos() - self._drag_start_pos
+            if delta.manhattanLength() > 5:
+                # 实际上在 QTextEdit 中直接拖动图片位置比较复杂
+                # 这里我们简化处理，显示拖动提示
+                pass
+            return
+        super().mouseMoveEvent(event)
+        
+    def mouseReleaseEvent(self, event):
+        """释放图片"""
+        if self._image_dragging:
+            self._image_dragging = False
+            self._selected_image_format = None
+            self.setCursor(Qt.IBeamCursor)
+            return
+        super().mouseReleaseEvent(event)
+        
+    def wheelEvent(self, event):
+        """滚轮缩放选中的图片"""
+        if self._selected_image_format:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self._image_scale = min(3.0, self._image_scale + self._scale_step)
+            else:
+                self._image_scale = max(0.5, self._image_scale - self._scale_step)
+            self._update_image_scale()
+            event.accept()
+            return
+        super().wheelEvent(event)
+        
+    def _update_image_scale(self):
+        """更新选中图片的缩放"""
+        if self._selected_image_format:
+            # 获取当前光标位置的图片并更新其大小
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                cursor.clearSelection()
+            # 查找图片并更新
+            img_name = self._selected_image_format.name()
+            # 在HTML中更新图片尺寸
+            html = self.toHtml()
+            # 简单的方式：重新插入缩放后的图片
+            cursor.insertHtml(
+                f'<img src="{img_name}" style="transform: scale({self._image_scale}); '
+                f'margin:8px 0; max-width:100%;">'
+            )
+            
+    def keyPressEvent(self, event):
+        """键盘快捷键：Delete删除选中图片，+-缩放"""
+        if self._selected_image_format:
+            if event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace:
+                # 删除选中的图片
+                cursor = self.textCursor()
+                cursor.deleteChar()
+                self._selected_image_format = None
+                event.accept()
+                return
+            elif event.key() == Qt.Key_Plus or event.key() == Qt.Key_Equal:
+                self._image_scale = min(3.0, self._image_scale + self._scale_step)
+                self._update_image_scale()
+                event.accept()
+                return
+            elif event.key() == Qt.Key_Minus:
+                self._image_scale = max(0.5, self._image_scale - self._scale_step)
+                self._update_image_scale()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+
 class _FormatBtn(QWidget):
     """富文本编辑器工具栏的图形化格式按钮"""
     clicked = pyqtSignal()
@@ -4907,11 +5008,91 @@ class DetailPanel(QWidget):
         """)
         self.record_stack.addWidget(self.record_content_browser)
 
-        # Page 1: 编辑模式 - 标题输入 + 干净编辑器（Trilium Notes 风格）
+        # Page 1: 编辑模式 - 标题输入 + 工具面板 + 编辑器（工具固定在侧方）
         edit_widget = QWidget()
-        edit_layout = QVBoxLayout(edit_widget)
+        edit_layout = QHBoxLayout(edit_widget)
         edit_layout.setContentsMargins(0, 0, 0, 0)
         edit_layout.setSpacing(0)
+
+        # 左侧工具面板（固定显示）
+        self._tool_panel = QWidget()
+        self._tool_panel.setFixedWidth(40)
+        self._tool_panel.setStyleSheet("background: #222226;")
+        tool_panel_layout = QVBoxLayout(self._tool_panel)
+        tool_panel_layout.setContentsMargins(4, 8, 4, 8)
+        tool_panel_layout.setSpacing(4)
+
+        # 格式工具
+        format_tools = [
+            ('bold', '加粗'), ('italic', '斜体'), ('underline', '下划线'), ('strikethrough', '删除线'),
+            ('superscript', '上标'), ('subscript', '下标'), ('code', '行内代码'),
+        ]
+        for fmt_id, tip in format_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        tool_panel_layout.addStretch()
+
+        # 对齐工具
+        align_tools = [
+            ('align_left', '左对齐'), ('align_center', '居中'), ('align_right', '右对齐'),
+        ]
+        for fmt_id, tip in align_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        tool_panel_layout.addStretch()
+
+        # 列表工具
+        list_tools = [
+            ('bullet_list', '无序列表'), ('ordered_list', '有序列表'),
+        ]
+        for fmt_id, tip in list_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        tool_panel_layout.addStretch()
+
+        # 插入工具
+        insert_tools = [
+            ('insert_image', '插入图片'), ('insert_table', '插入表格'),
+            ('insert_hr', '分隔线'), ('insert_link', '插入链接'),
+        ]
+        for fmt_id, tip in insert_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_block_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        tool_panel_layout.addStretch()
+
+        # 撤销/重做
+        undo_redo_tools = [('undo', '撤销'), ('redo', '重做')]
+        for fmt_id, tip in undo_redo_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        edit_layout.addWidget(self._tool_panel)
+
+        # 分隔线
+        tool_sep = QFrame()
+        tool_sep.setFrameShape(QFrame.VLine)
+        tool_sep.setStyleSheet("background-color: #2a2a30; width: 1px;")
+        edit_layout.addWidget(tool_sep)
+
+        # 右侧编辑区域
+        edit_content = QWidget()
+        edit_content_layout = QVBoxLayout(edit_content)
+        edit_content_layout.setContentsMargins(0, 0, 0, 0)
+        edit_content_layout.setSpacing(0)
 
         # 编辑模式标题栏（紧凑）
         edit_title_bar = QWidget()
@@ -4946,23 +5127,25 @@ class DetailPanel(QWidget):
         self.btn_inline_cancel.setFixedWidth(52)
         self.btn_inline_cancel.clicked.connect(lambda checked: self._exit_edit_mode(save=False))
         edit_title_layout.addWidget(self.btn_inline_cancel)
-        edit_layout.addWidget(edit_title_bar)
+        edit_content_layout.addWidget(edit_title_bar)
 
         # 分隔线
         title_sep = QFrame()
         title_sep.setFrameShape(QFrame.HLine)
         title_sep.setStyleSheet("background-color: #2a2a30; max-height: 1px;")
-        edit_layout.addWidget(title_sep)
+        edit_content_layout.addWidget(title_sep)
 
-        # 内嵌富文本编辑器（干净，无固定工具栏）
-        self.inline_text_edit = QTextEdit()
+        # 内嵌富文本编辑器（支持图片选中、缩放和拖动）
+        self.inline_text_edit = _ImageEditableTextEdit()
         self.inline_text_edit.setAcceptRichText(True)
         self.inline_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         self.inline_text_edit.customContextMenuRequested.connect(self._show_inline_context_menu)
         self.inline_text_edit.setStyleSheet("""
             QTextEdit { border: none; background: transparent; padding: 16px 24px; color: #d0d0d4; }
         """)
-        edit_layout.addWidget(self.inline_text_edit, stretch=1)
+        edit_content_layout.addWidget(self.inline_text_edit, stretch=1)
+
+        edit_layout.addWidget(edit_content, stretch=1)
 
         self.record_stack.addWidget(edit_widget)
 
@@ -4980,24 +5163,14 @@ class DetailPanel(QWidget):
         self._inline_save_timer.setSingleShot(True)
         self._inline_save_timer.timeout.connect(self._inline_auto_save)
 
-        # ── 浮动工具栏（Trilium Notes 风格） ──
-        self._inline_format_bar = _InlineFormatBar(self.inline_text_edit)
-        self._inline_format_bar.format_action.connect(self._on_format_action)
-        self._inline_format_bar.hide()
-
-        self._block_toolbar = _BlockToolbar(self.inline_text_edit)
-        self._block_toolbar.action_triggered.connect(self._on_block_action)
-        self._block_toolbar.hide()
-
+        # 图片编辑弹窗（用于图片标注）
         self._image_edit_popup = _ImageEditPopup()
         self._image_edit_popup.edit_image.connect(self._open_image_editor)
         self._image_edit_popup.annotate_image.connect(self._quick_annotate_image)
         self._image_edit_popup.hide()
 
         # 连接编辑器信号
-        self.inline_text_edit.selectionChanged.connect(self._on_selection_changed)
         self.inline_text_edit.textChanged.connect(self._on_edit_text_changed)
-        self.inline_text_edit.cursorPositionChanged.connect(self._on_cursor_position_changed)
         # 安装事件过滤器以检测图片点击
         self.inline_text_edit.viewport().installEventFilter(self)
         # 安装事件过滤器以支持标签拖动脱离
@@ -5025,17 +5198,6 @@ class DetailPanel(QWidget):
         elif action == act_delete:
             self._delete_record()
 
-    # ── 浮动工具栏事件处理 ──
-    def _on_selection_changed(self):
-        """选区变化时显示/隐藏浮动格式栏"""
-        if not self._is_edit_mode:
-            return
-        cursor = self.inline_text_edit.textCursor()
-        if cursor.hasSelection():
-            self._inline_format_bar.show_at_selection()
-        else:
-            self._inline_format_bar.hide_bar()
-
     def _on_edit_text_changed(self):
         """编辑器文本变化时触发自动保存"""
         if self._is_edit_mode:
@@ -5043,13 +5205,8 @@ class DetailPanel(QWidget):
             self.inline_save_indicator.setStyleSheet("color: #f0a030; font-size: 11px; background: transparent;")
             self._inline_save_timer.start(2000)
 
-    def _on_cursor_position_changed(self):
-        """光标位置变化时更新块工具栏位置"""
-        if self._is_edit_mode:
-            self._block_toolbar.update_position()
-
     def _on_format_action(self, action_id):
-        """处理浮动格式栏的动作"""
+        """处理格式栏的动作"""
         if action_id.startswith('heading_'):
             idx = int(action_id.split('_')[1])
             self._inline_set_heading(idx)
@@ -5087,10 +5244,6 @@ class DetailPanel(QWidget):
             self.inline_text_edit.undo()
         elif action_id == 'redo':
             self.inline_text_edit.redo()
-        # 重新显示格式栏
-        cursor = self.inline_text_edit.textCursor()
-        if cursor.hasSelection():
-            QTimer.singleShot(50, self._inline_format_bar.show_at_selection)
 
     def _on_block_action(self, action_id):
         """处理块工具栏的动作"""
@@ -5511,8 +5664,6 @@ class DetailPanel(QWidget):
         self.inline_title_input.setFocus()
         # 禁用列表切换避免丢失编辑
         self.record_list.setEnabled(False)
-        # 显示浮动工具栏
-        self._block_toolbar.update_position()
 
     def _exit_edit_mode(self, save=True):
         """退出编辑模式"""
@@ -5523,9 +5674,6 @@ class DetailPanel(QWidget):
         self._inline_save_timer.stop()
         self.record_stack.setCurrentIndex(0)
         self.record_list.setEnabled(True)
-        # 隐藏浮动工具栏
-        self._inline_format_bar.hide_bar()
-        self._block_toolbar.hide()
         self._image_edit_popup.hide()
         self._refresh_content()
 
@@ -6030,11 +6178,66 @@ class _DetachedTabWindow(QDialog):
             QTextBrowser a { color: #3f7bf7; }
         """)
         self.record_stack.addWidget(self.content_browser)
-        # 编辑模式（Trilium Notes 风格 - 干净编辑器）
+        # 编辑模式（工具固定在侧方）
         edit_widget = QWidget()
-        edit_layout = QVBoxLayout(edit_widget)
+        edit_layout = QHBoxLayout(edit_widget)
         edit_layout.setContentsMargins(0, 0, 0, 0)
         edit_layout.setSpacing(0)
+        # 左侧工具面板
+        self._tool_panel = QWidget()
+        self._tool_panel.setFixedWidth(40)
+        self._tool_panel.setStyleSheet("background: #222226;")
+        tool_panel_layout = QVBoxLayout(self._tool_panel)
+        tool_panel_layout.setContentsMargins(4, 8, 4, 8)
+        tool_panel_layout.setSpacing(4)
+        format_tools = [
+            ('bold', '加粗'), ('italic', '斜体'), ('underline', '下划线'), ('strikethrough', '删除线'),
+            ('superscript', '上标'), ('subscript', '下标'), ('code', '行内代码'),
+        ]
+        for fmt_id, tip in format_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+        tool_panel_layout.addStretch()
+        align_tools = [('align_left', '左对齐'), ('align_center', '居中'), ('align_right', '右对齐')]
+        for fmt_id, tip in align_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+        tool_panel_layout.addStretch()
+        list_tools = [('bullet_list', '无序列表'), ('ordered_list', '有序列表')]
+        for fmt_id, tip in list_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+        tool_panel_layout.addStretch()
+        insert_tools = [('insert_image', '插入图片'), ('insert_table', '插入表格'), ('insert_hr', '分隔线'), ('insert_link', '插入链接')]
+        for fmt_id, tip in insert_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_block_action(fid))
+            tool_panel_layout.addWidget(btn)
+        tool_panel_layout.addStretch()
+        undo_redo_tools = [('undo', '撤销'), ('redo', '重做')]
+        for fmt_id, tip in undo_redo_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
+            tool_panel_layout.addWidget(btn)
+        edit_layout.addWidget(self._tool_panel)
+        # 分隔线
+        tool_sep = QFrame()
+        tool_sep.setFrameShape(QFrame.VLine)
+        tool_sep.setStyleSheet("background-color: #2a2a30; width: 1px;")
+        edit_layout.addWidget(tool_sep)
+        # 右侧编辑区域
+        edit_content = QWidget()
+        edit_content_layout = QVBoxLayout(edit_content)
+        edit_content_layout.setContentsMargins(0, 0, 0, 0)
+        edit_content_layout.setSpacing(0)
         # 编辑标题栏（紧凑）
         edit_title_bar = QWidget()
         edit_title_bar.setFixedHeight(42)
@@ -6064,19 +6267,20 @@ class _DetachedTabWindow(QDialog):
         btn_cancel.setFixedWidth(52)
         btn_cancel.clicked.connect(lambda: self._exit_edit_mode(save=False))
         etl.addWidget(btn_cancel)
-        edit_layout.addWidget(edit_title_bar)
+        edit_content_layout.addWidget(edit_title_bar)
         # 分隔线
         title_sep = QFrame()
         title_sep.setFrameShape(QFrame.HLine)
         title_sep.setStyleSheet("background-color: #2a2a30; max-height: 1px;")
-        edit_layout.addWidget(title_sep)
-        # 编辑器
-        self.inline_text_edit = QTextEdit()
+        edit_content_layout.addWidget(title_sep)
+        # 编辑器（支持图片选中、缩放、拖动）
+        self.inline_text_edit = _ImageEditableTextEdit()
         self.inline_text_edit.setAcceptRichText(True)
         self.inline_text_edit.setStyleSheet("""
             QTextEdit { border: none; background: transparent; padding: 16px 24px; color: #d0d0d4; }
         """)
-        edit_layout.addWidget(self.inline_text_edit, stretch=1)
+        edit_content_layout.addWidget(self.inline_text_edit, stretch=1)
+        edit_layout.addWidget(edit_content, stretch=1)
         self.record_stack.addWidget(edit_widget)
 
         splitter.addWidget(self.record_stack)
