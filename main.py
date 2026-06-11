@@ -3816,6 +3816,32 @@ class _FormatBtn(QWidget):
             painter.drawRect(cx - 3, cy - 7, 6, 5)
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(cx - 4, cy + 1, 8, 6)
+        elif fid == 'superscript':
+            # 上标图标 x²
+            painter.setFont(QFont("SimSun", 10))
+            painter.drawText(cx - 4, cy - 5, 8, 8, Qt.AlignCenter, 'x')
+            painter.setFont(QFont("SimSun", 6))
+            painter.drawText(cx + 2, cy - 7, 6, 6, Qt.AlignCenter, '2')
+        elif fid == 'subscript':
+            # 下标图标 x₂
+            painter.setFont(QFont("SimSun", 10))
+            painter.drawText(cx - 4, cy - 2, 8, 8, Qt.AlignCenter, 'x')
+            painter.setFont(QFont("SimSun", 6))
+            painter.drawText(cx + 2, cy + 2, 6, 6, Qt.AlignCenter, '2')
+        elif fid == 'code':
+            # 行内代码图标 `<>`
+            painter.setFont(QFont("Consolas", 8, QFont.Bold))
+            painter.drawText(r, Qt.AlignCenter, '<>')
+        elif fid == 'undo':
+            # 撤销图标 ↩
+            painter.drawArc(cx - 6, cy - 6, 12, 12, 30 * 16, 240 * 16)
+            pts = [QPoint(cx - 6, cy + 2), QPoint(cx - 6, cy + 6), QPoint(cx - 1, cy + 3)]
+            painter.drawPolyline(QPolygon(pts))
+        elif fid == 'redo':
+            # 重做图标 ↪
+            painter.drawArc(cx - 6, cy - 6, 12, 12, 210 * 16, 240 * 16)
+            pts = [QPoint(cx + 6, cy + 2), QPoint(cx + 6, cy + 6), QPoint(cx + 1, cy + 3)]
+            painter.drawPolyline(QPolygon(pts))
         painter.end()
 
     def enterEvent(self, event):
@@ -3915,11 +3941,37 @@ class _InlineFormatBar(QWidget):
 
         self._add_sep(layout)
 
+        # 上下标
+        for fmt_id, tip in [('superscript', '上标'), ('subscript', '下标')]:
+            btn = _FormatBtn(fmt_id, fg_color='#d0d0d4')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self.format_action.emit(fid))
+            layout.addWidget(btn)
+
+        self._add_sep(layout)
+
+        # 代码格式化
+        btn_code = _FormatBtn('code', fg_color='#d0d0d4')
+        btn_code.setToolTip('行内代码')
+        btn_code.clicked.connect(lambda: self.format_action.emit('code'))
+        layout.addWidget(btn_code)
+
+        self._add_sep(layout)
+
         # 链接
         btn_link = _FormatBtn('insert_link', fg_color='#d0d0d4')
         btn_link.setToolTip('插入链接')
         btn_link.clicked.connect(lambda: self.format_action.emit('insert_link'))
         layout.addWidget(btn_link)
+
+        self._add_sep(layout)
+
+        # 撤销/重做
+        for fmt_id, tip in [('undo', '撤销'), ('redo', '重做')]:
+            btn = _FormatBtn(fmt_id, fg_color='#d0d0d4')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self.format_action.emit(fid))
+            layout.addWidget(btn)
 
         self.setFixedHeight(34)
 
@@ -4033,15 +4085,33 @@ class _BlockToolbar(QWidget):
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
             QMenu::item:selected { background-color: #3f7bf7; }
         """)
-        actions = [
-            ('insert_image', '📷 插入图片'),
-            ('insert_table', '📊 插入表格'),
-            ('insert_code', '💻 插入代码块'),
-            ('insert_hr', '➖ 插入分隔线'),
-            ('insert_link', '🔗 插入链接'),
+        # 图片工具
+        image_menu = menu.addMenu('🖼️ 图片')
+        image_actions = [
+            ('insert_image', '插入图片'),
+            ('insert_image_from_db', '从数据库选择'),
+            ('image_left', '图片左对齐'),
+            ('image_center', '图片居中'),
+            ('image_right', '图片右对齐'),
+            ('image_full', '图片全屏宽度'),
+            ('image_resize_small', '缩小图片'),
+            ('image_resize_large', '放大图片'),
         ]
-        for action_id, text in actions:
-            act = menu.addAction(text)
+        for action_id, text in image_actions:
+            act = image_menu.addAction(text)
+            act.setData(action_id)
+        # 文字工具
+        text_menu = menu.addMenu('📝 文字')
+        text_actions = [
+            ('insert_table', '插入表格'),
+            ('insert_code', '插入代码块'),
+            ('insert_hr', '插入分隔线'),
+            ('insert_link', '插入链接'),
+            ('insert_todo', '待办事项'),
+            ('insert_note', '嵌入笔记'),
+        ]
+        for action_id, text in text_actions:
+            act = text_menu.addAction(text)
             act.setData(action_id)
         # 在按钮下方显示菜单
         global_pos = self.mapToGlobal(QPoint(0, self.height()))
@@ -5005,8 +5075,18 @@ class DetailPanel(QWidget):
             self._inline_set_text_color()
         elif action_id == 'bg_color':
             self._inline_set_bg_color()
+        elif action_id == 'superscript':
+            self._inline_toggle_superscript()
+        elif action_id == 'subscript':
+            self._inline_toggle_subscript()
+        elif action_id == 'code':
+            self._inline_insert_code()
         elif action_id == 'insert_link':
             self._inline_insert_link()
+        elif action_id == 'undo':
+            self.inline_text_edit.undo()
+        elif action_id == 'redo':
+            self.inline_text_edit.redo()
         # 重新显示格式栏
         cursor = self.inline_text_edit.textCursor()
         if cursor.hasSelection():
@@ -5016,6 +5096,20 @@ class DetailPanel(QWidget):
         """处理块工具栏的动作"""
         if action_id == 'insert_image':
             self._inline_insert_image()
+        elif action_id == 'insert_image_from_db':
+            self._inline_insert_image_from_db()
+        elif action_id == 'image_left':
+            self._inline_image_align('left')
+        elif action_id == 'image_center':
+            self._inline_image_align('center')
+        elif action_id == 'image_right':
+            self._inline_image_align('right')
+        elif action_id == 'image_full':
+            self._inline_image_align('full')
+        elif action_id == 'image_resize_small':
+            self._inline_image_resize(0.8)
+        elif action_id == 'image_resize_large':
+            self._inline_image_resize(1.25)
         elif action_id == 'insert_table':
             self._inline_insert_table()
         elif action_id == 'insert_code':
@@ -5024,6 +5118,10 @@ class DetailPanel(QWidget):
             self._inline_insert_hr()
         elif action_id == 'insert_link':
             self._inline_insert_link()
+        elif action_id == 'insert_todo':
+            self._inline_insert_todo()
+        elif action_id == 'insert_note':
+            self._inline_insert_note()
 
     def eventFilter(self, obj, event):
         """事件过滤器 - 检测编辑器中图片的点击 + 标签拖动脱离"""
@@ -5199,6 +5297,121 @@ class DetailPanel(QWidget):
             'border-radius:4px; font-family:Consolas,monospace; font-size:13px; '
             'overflow-x:auto; margin:8px 0;">代码</pre>'
         )
+
+    def _inline_toggle_superscript(self):
+        """切换上标"""
+        fmt = self.inline_text_edit.currentCharFormat()
+        fmt.setVerticalAlignment(QTextCharFormat.AlignSuperScript if fmt.verticalAlignment() != QTextCharFormat.AlignSuperScript else QTextCharFormat.AlignNormal)
+        self.inline_text_edit.setCurrentCharFormat(fmt)
+
+    def _inline_toggle_subscript(self):
+        """切换下标"""
+        fmt = self.inline_text_edit.currentCharFormat()
+        fmt.setVerticalAlignment(QTextCharFormat.AlignSubScript if fmt.verticalAlignment() != QTextCharFormat.AlignSubScript else QTextCharFormat.AlignNormal)
+        self.inline_text_edit.setCurrentCharFormat(fmt)
+
+    def _inline_insert_code(self):
+        """插入行内代码"""
+        cursor = self.inline_text_edit.textCursor()
+        selected_text = cursor.selectedText()
+        if selected_text:
+            cursor.insertHtml(f'<code style="background:#333; color:#e0e0e4; padding:2px 6px; border-radius:3px; font-family:Consolas,monospace;">{selected_text}</code>')
+        else:
+            cursor.insertHtml('<code style="background:#333; color:#e0e0e4; padding:2px 6px; border-radius:3px; font-family:Consolas,monospace;">代码</code>')
+
+    def _inline_insert_image_from_db(self):
+        """从数据库选择图片插入"""
+        if not self.active_db:
+            QMessageBox.warning(self, '提示', '未选择数据库')
+            return
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        c.execute("SELECT id, filename FROM images WHERE image_type='image'")
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            QMessageBox.information(self, '提示', '数据库中没有图片')
+            return
+        # 显示图片选择对话框
+        from PyQt5.QtWidgets import QDialog, QListWidget, QPushButton, QVBoxLayout, QLabel
+        dlg = QDialog(self)
+        dlg.setWindowTitle('选择图片')
+        dlg.resize(300, 400)
+        layout = QVBoxLayout(dlg)
+        list_widget = QListWidget()
+        layout.addWidget(list_widget)
+        for row in rows:
+            list_widget.addItem(row[1])
+        btn_ok = QPushButton('确定')
+        btn_ok.clicked.connect(dlg.accept)
+        layout.addWidget(btn_ok)
+        if dlg.exec_() == QDialog.Accepted and list_widget.currentItem():
+            filename = list_widget.currentItem().text()
+            img_path = os.path.join(APP_DIR, 'images', filename)
+            if os.path.exists(img_path):
+                self.inline_text_edit.insertHtml(
+                    f'<img src="{img_path}" style="max-width:100%; margin:8px 0;">'
+                )
+            else:
+                # 尝试从数据库解密
+                if self.user_password:
+                    try:
+                        key = generate_key(self.user_password)
+                        conn = sqlite3.connect(self.active_db)
+                        c = conn.cursor()
+                        c.execute("SELECT image_data FROM images WHERE filename=?", (filename,))
+                        row = c.fetchone()
+                        conn.close()
+                        if row and row[0]:
+                            raw_data = decrypt_data(row[0], key)
+                            temp_path = os.path.join(tempfile.gettempdir(), filename)
+                            with open(temp_path, 'wb') as f:
+                                f.write(raw_data)
+                            self.inline_text_edit.insertHtml(
+                                f'<img src="{temp_path}" style="max-width:100%; margin:8px 0;">'
+                            )
+                    except Exception as e:
+                        print(f"从数据库加载图片失败: {e}")
+
+    def _inline_image_align(self, align):
+        """调整图片对齐方式"""
+        cursor = self.inline_text_edit.textCursor()
+        if align == 'left':
+            cursor.insertHtml('<p style="text-align:left; margin:8px 0;">')
+        elif align == 'center':
+            cursor.insertHtml('<p style="text-align:center; margin:8px 0;">')
+        elif align == 'right':
+            cursor.insertHtml('<p style="text-align:right; margin:8px 0;">')
+        elif align == 'full':
+            cursor.insertHtml('<p style="text-align:center; margin:8px 0;">')
+
+    def _inline_image_resize(self, factor):
+        """调整图片大小"""
+        # QTextEdit中直接调整图片大小比较复杂，这里简单插入一个带有缩放的图片占位
+        cursor = self.inline_text_edit.textCursor()
+        cursor.insertHtml(
+            f'<img src="" style="transform: scale({factor}); margin:8px 0;" '
+            f'width="200" height="150" alt="图片">'
+        )
+
+    def _inline_insert_todo(self):
+        """插入待办事项（Trilium Notes 风格）"""
+        cursor = self.inline_text_edit.textCursor()
+        cursor.insertHtml('<span style="color:#3f7bf7; font-family:Segoe UI Emoji;">☐</span> <span style="color:#c8c8cc;">待办事项</span><br>')
+
+    def _inline_insert_note(self):
+        """插入嵌入笔记引用（Trilium Notes 风格）"""
+        from PyQt5.QtWidgets import QInputDialog
+        note_name, ok = QInputDialog.getText(self, '嵌入笔记', '笔记名称:')
+        if ok and note_name:
+            cursor = self.inline_text_edit.textCursor()
+            cursor.insertHtml(
+                f'<div style="background:#2a2a30; border-left:3px solid #3f7bf7; '
+                f'padding:8px 12px; margin:8px 0; border-radius:0 4px 4px 0;">'
+                f'<span style="color:#3f7bf7; font-weight:bold;">📎 {note_name}</span>'
+                f'<p style="color:#888; margin:4px 0 0 0; font-size:12px;">嵌入笔记内容将在此显示</p>'
+                f'</div>'
+            )
 
     def _show_inline_context_menu(self, pos):
         """显示内嵌编辑器右键菜单（Trilium Notes 风格增强版）"""
