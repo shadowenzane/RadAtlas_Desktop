@@ -3,6 +3,11 @@ import sys
 import json
 import math
 import sqlite3
+import warnings
+
+# 抑制 Python 级别警告
+# 注意：libpng iCCP 警告是C级别输出，Python无法捕获，不影响功能
+warnings.filterwarnings("ignore")
 
 # 版本信息
 APP_VERSION = 'v1.0.0'
@@ -20,11 +25,11 @@ from PyQt5.QtWidgets import (
     QScrollArea, QComboBox, QFileDialog, QMenu, QMenuBar,
     QAction, QCompleter, QToolBar, QSpinBox, QCheckBox,
     QInputDialog, QSlider, QGridLayout, QAbstractItemView,
-    QStackedWidget, QSizeGrip
+    QStackedWidget, QSizeGrip, QRadioButton, QFormLayout
 )
-from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, QPropertyAnimation, QEasingCurve
+from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, QPropertyAnimation, QEasingCurve, QUrl, QObject
 from PyQt5.QtWidgets import QGraphicsOpacityEffect
-from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QTextListFormat, QPixmap, QPainter, QPainterPath, QPen, QPolygon, QBrush, QTransform
+from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QTextListFormat, QTextCharFormat, QPixmap, QPainter, QPainterPath, QPen, QPolygon, QBrush, QTransform, QTextDocument, QImage
 
 from models import (
     init_user_db, authenticate_user, init_db, load_data,
@@ -39,7 +44,9 @@ from models import (
     store_annotations_encrypted, load_annotations_decrypted,
     migrate_images_to_db
 )
-from ai_helper import load_config, save_config, call_ai, PROVIDERS
+from ai_helper import (load_config, save_config, call_ai, PROVIDERS,
+                       load_multi_config, call_diagnosis_multi,
+                       KNOWLEDGE_PROVIDERS)
 
 # ── 主题定义 ──────────────────────────────────────────────
 THEMES = {
@@ -487,10 +494,10 @@ class _CustomTitleBar(QWidget):
         layout.setContentsMargins(10, 0, 6, 0)
         layout.setSpacing(6)
 
-        # 图标/名称
-        icon_label = QLabel(icon_text)
+        # 图标/名称 - 使用更美观的图标样式
+        icon_label = QLabel('RadAtlas')
         icon_label.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
-        icon_label.setStyleSheet("background: transparent;")
+        icon_label.setStyleSheet("background: transparent; color: #3f7bf7;")
         icon_label.setFixedWidth(80)
         layout.addWidget(icon_label)
 
@@ -527,7 +534,7 @@ class _CustomTitleBar(QWidget):
     def set_title(self, title):
         self.title_label.setText(title)
 
-    def _toggle_maximize(self):
+    def _toggle_maximize(self, checked=False):
         if self.parent_window.isMaximized():
             self.parent_window.showNormal()
             self.btn_max.set_restored(False)
@@ -638,7 +645,27 @@ class LoginDialog(QDialog):
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setFixedHeight(44)
         self.password_input.returnPressed.connect(self.do_login)
-        content.addWidget(self.password_input)
+
+        # 密码可见性切换
+        pwd_row = QHBoxLayout()
+        pwd_row.setSpacing(0)
+        pwd_row.addWidget(self.password_input, stretch=1)
+        self.pwd_toggle = QPushButton()
+        self.pwd_toggle.setFixedSize(36, 44)
+        self.pwd_toggle.setCursor(Qt.PointingHandCursor)
+        self.pwd_toggle.setText('\U0001F441')
+        self.pwd_toggle.setCheckable(True)
+        self.pwd_toggle.setStyleSheet("""
+            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; }
+            QPushButton:hover { color: #c0c0c8; }
+        """)
+        self.pwd_toggle.clicked.connect(lambda checked: self.password_input.setEchoMode(
+            QLineEdit.Normal if checked else QLineEdit.Password))
+        pwd_row.addWidget(self.pwd_toggle)
+        pwd_widget = QWidget()
+        pwd_widget.setLayout(pwd_row)
+        pwd_widget.setFixedHeight(44)
+        content.addWidget(pwd_widget)
 
         content.addSpacing(8)
 
@@ -663,7 +690,7 @@ class LoginDialog(QDialog):
 
         layout.addLayout(content)
 
-    def do_login(self):
+    def do_login(self, checked=False):
         username = self.username_input.text().strip()
         password = self.password_input.text().strip()
         if not username or not password:
@@ -687,57 +714,42 @@ class AIConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('AI 大模型配置')
-        self.setFixedSize(480, 360)
+        self.setMinimumSize(550, 500)
+        self._provider_rows = []
+        self._init_ui()
 
+    def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        config = load_config()
+        layout.addWidget(QLabel('配置大模型API（最多3个，AI诊断查询时可同时使用）'))
 
-        # 提供商选择
-        provider_row = QHBoxLayout()
-        provider_row.addWidget(QLabel('AI提供商:'))
-        self.provider_combo = QComboBox()
-        for pid, pinfo in PROVIDERS.items():
-            self.provider_combo.addItem(pinfo['name'], pid)
-        # 设置当前选中
-        idx = list(PROVIDERS.keys()).index(config.get('provider', 'deepseek'))
-        self.provider_combo.setCurrentIndex(idx)
-        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        provider_row.addWidget(self.provider_combo)
-        provider_row.addStretch()
-        layout.addLayout(provider_row)
+        # 模型配置列表区域
+        self.config_scroll = QScrollArea()
+        self.config_scroll.setWidgetResizable(True)
+        self.config_widget = QWidget()
+        self.config_layout = QVBoxLayout(self.config_widget)
+        self.config_layout.setSpacing(8)
+        self.config_layout.setContentsMargins(4, 4, 4, 4)
+        self.config_scroll.setWidget(self.config_widget)
+        layout.addWidget(self.config_scroll, stretch=1)
 
-        # 模型选择
-        model_row = QHBoxLayout()
-        model_row.addWidget(QLabel('模型:'))
-        self.model_combo = QComboBox()
-        self._update_models()
-        # 设置当前模型
-        cur_model = config.get('model', '')
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemText(i) == cur_model:
-                self.model_combo.setCurrentIndex(i)
-                break
-        model_row.addWidget(self.model_combo)
-        model_row.addStretch()
-        layout.addLayout(model_row)
+        # 加载已有配置
+        providers = load_multi_config()
+        for pc in providers:
+            self._add_provider_row(pc)
+        if not self._provider_rows:
+            self._add_provider_row()
 
-        # API Key
-        layout.addWidget(QLabel('API Key:'))
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setEchoMode(QLineEdit.Password)
-        self.api_key_input.setText(config.get('api_key', ''))
-        self.api_key_input.setPlaceholderText('输入你的API Key')
-        layout.addWidget(self.api_key_input)
-
-        # 自定义API地址
-        layout.addWidget(QLabel('自定义API地址（可选，留空使用默认）:'))
-        self.custom_url_input = QLineEdit()
-        self.custom_url_input.setText(config.get('custom_api_url', ''))
-        self.custom_url_input.setPlaceholderText('https://...')
-        layout.addWidget(self.custom_url_input)
+        # 添加按钮
+        add_btn_row = QHBoxLayout()
+        add_btn = QPushButton('+ 添加模型')
+        add_btn.setObjectName('mutedBtn')
+        add_btn.clicked.connect(lambda: self._add_provider_row())
+        add_btn_row.addWidget(add_btn)
+        add_btn_row.addStretch()
+        layout.addLayout(add_btn_row)
 
         layout.addSpacing(10)
 
@@ -753,25 +765,654 @@ class AIConfigDialog(QDialog):
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
-    def _on_provider_changed(self, idx):
-        self._update_models()
+    def _add_provider_row(self, config=None):
+        """添加一行模型配置"""
+        if config is None:
+            config = {}
+        if len(self._provider_rows) >= 3:
+            QMessageBox.information(self, '提示', '最多配置3个模型')
+            return
 
-    def _update_models(self):
-        self.model_combo.clear()
-        pid = self.provider_combo.currentData()
-        if pid and pid in PROVIDERS:
-            for model in PROVIDERS[pid]['models']:
-                self.model_combo.addItem(model)
+        row_widget = QWidget()
+        row_widget.setStyleSheet("background: rgba(255,255,255,4); border-radius: 6px; padding: 8px;")
+        row_layout = QGridLayout(row_widget)
+        row_layout.setSpacing(6)
 
-    def _save(self):
-        config = {
-            'provider': self.provider_combo.currentData() or 'deepseek',
-            'model': self.model_combo.currentText() or 'deepseek-chat',
-            'api_key': self.api_key_input.text().strip(),
-            'custom_api_url': self.custom_url_input.text().strip(),
-        }
+        # 启用复选框
+        enabled_cb = QCheckBox('启用')
+        enabled_cb.setChecked(config.get('enabled', True))
+        row_layout.addWidget(enabled_cb, 0, 0)
+
+        # 提供商
+        row_layout.addWidget(QLabel('提供商:'), 0, 1)
+        provider_combo = QComboBox()
+        for pid, pinfo in PROVIDERS.items():
+            provider_combo.addItem(pinfo['name'], pid)
+        cur_provider = config.get('provider', 'deepseek')
+        idx = list(PROVIDERS.keys()).index(cur_provider) if cur_provider in PROVIDERS else 0
+        provider_combo.setCurrentIndex(idx)
+        row_layout.addWidget(provider_combo, 0, 2)
+
+        # 模型（可编辑，支持自定义模型名）
+        row_layout.addWidget(QLabel('模型:'), 1, 1)
+        model_combo = QComboBox()
+        model_combo.setEditable(True)
+        row_layout.addWidget(model_combo, 1, 2)
+
+        # API Key
+        row_layout.addWidget(QLabel('API Key:'), 2, 1)
+        api_key_input = QLineEdit()
+        api_key_input.setEchoMode(QLineEdit.Password)
+        api_key_input.setText(config.get('api_key', ''))
+        api_key_input.setPlaceholderText('输入API Key')
+
+        # API Key 可见性切换
+        api_key_row = QHBoxLayout()
+        api_key_row.setSpacing(4)
+        api_key_row.addWidget(api_key_input, stretch=1)
+        api_key_toggle = QPushButton()
+        api_key_toggle.setFixedSize(28, 28)
+        api_key_toggle.setCursor(Qt.PointingHandCursor)
+        api_key_toggle.setText('\U0001F441')
+        api_key_toggle.setCheckable(True)
+        api_key_toggle.setStyleSheet("""
+            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; }
+            QPushButton:hover { color: #c0c0c8; }
+        """)
+        api_key_toggle.clicked.connect(lambda checked: api_key_input.setEchoMode(
+            QLineEdit.Normal if checked else QLineEdit.Password))
+        api_key_row.addWidget(api_key_toggle)
+        row_layout.addLayout(api_key_row, 2, 2)
+
+        # 自定义URL
+        row_layout.addWidget(QLabel('自定义URL:'), 3, 1)
+        custom_url_input = QLineEdit()
+        custom_url_input.setText(config.get('custom_api_url', ''))
+        custom_url_input.setPlaceholderText('留空使用默认')
+        row_layout.addWidget(custom_url_input, 3, 2)
+
+        # 删除按钮
+        del_btn = QPushButton('删除')
+        del_btn.setObjectName('dangerBtn')
+        del_btn.setFixedWidth(50)
+        del_btn.clicked.connect(lambda: self._remove_provider_row(row_widget))
+        row_layout.addWidget(del_btn, 0, 3)
+
+        # 更新模型列表
+        def update_models(idx):
+            model_combo.clear()
+            pid = provider_combo.currentData()
+            if pid and pid in PROVIDERS:
+                for model in PROVIDERS[pid]['models']:
+                    model_combo.addItem(model)
+
+        provider_combo.currentIndexChanged.connect(update_models)
+        update_models(0)
+
+        # 设置当前模型
+        cur_model = config.get('model', '')
+        for i in range(model_combo.count()):
+            if model_combo.itemText(i) == cur_model:
+                model_combo.setCurrentIndex(i)
+                break
+
+        self._provider_rows.append({
+            'widget': row_widget,
+            'enabled_cb': enabled_cb,
+            'provider_combo': provider_combo,
+            'model_combo': model_combo,
+            'api_key_input': api_key_input,
+            'custom_url_input': custom_url_input,
+        })
+        self.config_layout.addWidget(row_widget)
+
+    def _remove_provider_row(self, widget):
+        """删除一行模型配置"""
+        self.config_layout.removeWidget(widget)
+        self._provider_rows = [r for r in self._provider_rows if r['widget'] != widget]
+        widget.deleteLater()
+
+    def _save(self, checked=False):
+        """保存配置"""
+        providers = []
+        for row in self._provider_rows:
+            pc = {
+                'enabled': row['enabled_cb'].isChecked(),
+                'provider': row['provider_combo'].currentData() or 'deepseek',
+                'model': row['model_combo'].currentText() or 'deepseek-chat',
+                'api_key': row['api_key_input'].text().strip(),
+                'custom_api_url': row['custom_url_input'].text().strip(),
+            }
+            providers.append(pc)
+
+        config = load_config()
+        config['providers'] = providers
+        # 兼容旧格式
+        if providers:
+            config['provider'] = providers[0].get('provider', 'deepseek')
+            config['model'] = providers[0].get('model', 'deepseek-chat')
+            config['api_key'] = providers[0].get('api_key', '')
+            config['custom_api_url'] = providers[0].get('custom_api_url', '')
         save_config(config)
         QMessageBox.information(self, '成功', 'AI配置已保存')
+        self.accept()
+
+
+# ── AI影像诊断查询对话框 ──────────────────────────────────
+class AIDiagnosisDialog(QDialog):
+    """AI影像诊断查询对话框 - 支持多模型并行查询和知识库"""
+    diagnosis_clicked = pyqtSignal(dict)  # 点击诊断条目时发出
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('AI 影像诊断查询')
+        self.setMinimumSize(900, 700)
+        self.resize(1100, 750)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self._results = {}
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self, 'AI 影像诊断查询  |  楚雄州人民医院 医学影像中心 张兴文')
+        layout.addWidget(self.title_bar)
+
+        # 内容区域
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(16, 16, 16, 16)
+        content_layout.setSpacing(10)
+
+        # ── 查询参数区 ──
+        param_group = QGroupBox('查询参数')
+        param_group.setStyleSheet("""
+            QGroupBox { color: #b0b0b8; font-weight: bold; border: 1px solid #2a2a30;
+                        border-radius: 6px; margin-top: 8px; padding-top: 16px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
+        """)
+        param_layout = QGridLayout(param_group)
+        param_layout.setSpacing(8)
+
+        # 检查类型
+        param_layout.addWidget(QLabel('检查类型:'), 0, 0)
+        self.exam_combo = QComboBox()
+        self.exam_combo.addItems(['CT', 'X-Ray', 'MRI', 'PET-CT', '超声', 'DSA'])
+        self.exam_combo.setFixedWidth(120)
+        param_layout.addWidget(self.exam_combo, 0, 1)
+
+        # 关键字
+        param_layout.addWidget(QLabel('关键征象:'), 0, 2)
+        self.keywords_input = QLineEdit()
+        self.keywords_input.setPlaceholderText('输入关键字，如：腹部 胃 包块 等密度...')
+        self.keywords_input.returnPressed.connect(self._do_query)
+        param_layout.addWidget(self.keywords_input, 0, 3, 1, 3)
+
+        # 大模型选择
+        param_layout.addWidget(QLabel('选择大模型:'), 1, 0)
+        self.model_checks_layout = QHBoxLayout()
+        self.model_checks = []
+        providers = load_multi_config()
+        for i, pc in enumerate(providers):
+            if pc.get('api_key'):
+                name = PROVIDERS.get(pc['provider'], {}).get('name', pc['provider'])
+                cb = QCheckBox(f'{name} ({pc.get("model", "")})')
+                # 默认只选中前2个模型
+                cb.setChecked(i < 2)
+                cb.setProperty('provider_config', pc)
+                self.model_checks.append(cb)
+                self.model_checks_layout.addWidget(cb)
+        if not self.model_checks:
+            no_model = QLabel('未配置AI模型，请先在"AI配置"中设置')
+            no_model.setStyleSheet("color: #e64a3a;")
+            self.model_checks_layout.addWidget(no_model)
+        self.model_checks_layout.addStretch()
+        param_layout.addLayout(self.model_checks_layout, 1, 1, 1, 5)
+
+        # 知识库选择
+        param_layout.addWidget(QLabel('知识库:'), 2, 0)
+        kb_layout = QHBoxLayout()
+        self.kb_none = QRadioButton('不使用')
+        self.kb_tencent = QRadioButton('腾讯知识库')
+        self.kb_volcengine = QRadioButton('火山方舟知识库')
+        self.kb_notebooklm = QRadioButton('NotebookLM')
+        # 默认选中第一个有配置的知识库，否则选中"不使用"
+        kb_configs = load_config().get('knowledge_bases', {})
+        default_kb_selected = False
+        for kb_type, kb_radio in [('tencent', self.kb_tencent), ('volcengine', self.kb_volcengine), ('notebooklm', self.kb_notebooklm)]:
+            if kb_configs.get(kb_type, {}).get('api_key') and not default_kb_selected:
+                kb_radio.setChecked(True)
+                default_kb_selected = True
+        if not default_kb_selected:
+            self.kb_none.setChecked(True)
+        kb_layout.addWidget(self.kb_none)
+        kb_layout.addWidget(self.kb_tencent)
+        kb_layout.addWidget(self.kb_volcengine)
+        kb_layout.addWidget(self.kb_notebooklm)
+
+        self.kb_config_btn = QPushButton('知识库配置')
+        self.kb_config_btn.setObjectName('mutedBtn')
+        self.kb_config_btn.setFixedWidth(90)
+        self.kb_config_btn.clicked.connect(self._show_kb_config)
+        kb_layout.addWidget(self.kb_config_btn)
+        kb_layout.addStretch()
+        param_layout.addLayout(kb_layout, 2, 1, 1, 5)
+
+        content_layout.addWidget(param_group)
+
+        # ── 查询按钮 ──
+        btn_row = QHBoxLayout()
+        self.query_btn = QPushButton('开始查询')
+        self.query_btn.setFixedSize(120, 36)
+        self.query_btn.clicked.connect(self._do_query)
+        btn_row.addStretch()
+        btn_row.addWidget(self.query_btn)
+
+        self.status_label = QLabel('')
+        self.status_label.setStyleSheet("color: #888890; font-size: 12px;")
+        btn_row.addWidget(self.status_label)
+        content_layout.addLayout(btn_row)
+
+        # ── 结果展示区 ──
+        self.result_splitter = QSplitter(Qt.Horizontal)
+        # 左侧：诊断条目列表（按大模型分列）
+        self.result_list_panel = QWidget()
+        self.result_list_layout = QVBoxLayout(self.result_list_panel)
+        self.result_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.result_list_layout.setSpacing(4)
+        self.result_list_label = QLabel('诊断条目')
+        self.result_list_label.setStyleSheet("color: #888890; font-size: 12px; font-weight: bold;")
+        self.result_list_layout.addWidget(self.result_list_label)
+        self.result_list_layout.addWidget(QLabel('请输入关键字后点击"开始查询"'))
+        self.result_splitter.addWidget(self.result_list_panel)
+
+        # 右侧：诊断详情
+        self.detail_panel = QWidget()
+        detail_layout = QVBoxLayout(self.detail_panel)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_label = QLabel('诊断详情')
+        detail_label.setStyleSheet("color: #888890; font-size: 12px; font-weight: bold;")
+        detail_layout.addWidget(detail_label)
+        self.detail_browser = QTextBrowser()
+        self.detail_browser.setOpenExternalLinks(True)
+        self.detail_browser.setStyleSheet("""
+            QTextBrowser { background: #1a1a1e; border: 1px solid #2a2a30;
+                          border-radius: 6px; color: #d0d0d4; padding: 12px; font-size: 13px; }
+        """)
+        self.detail_browser.setHtml('<p style="color:#666670;">点击左侧诊断条目查看详情</p>')
+        detail_layout.addWidget(self.detail_browser)
+        self.result_splitter.addWidget(self.detail_panel)
+        self.result_splitter.setSizes([400, 600])
+
+        content_layout.addWidget(self.result_splitter, stretch=1)
+
+        layout.addWidget(content, stretch=1)
+
+    def _do_query(self):
+        """执行AI诊断查询"""
+        keywords = self.keywords_input.text().strip()
+        if not keywords:
+            QMessageBox.warning(self, '提示', '请输入关键征象')
+            return
+
+        # 获取选中的大模型
+        selected = [cb.property('provider_config') for cb in self.model_checks if cb.isChecked()]
+        if not selected:
+            QMessageBox.warning(self, '提示', '请至少选择一个大模型')
+            return
+
+        # 获取知识库配置
+        kb_config = None
+        if self.kb_tencent.isChecked():
+            kb_config = self._load_kb_config('tencent')
+        elif self.kb_volcengine.isChecked():
+            kb_config = self._load_kb_config('volcengine')
+        elif self.kb_notebooklm.isChecked():
+            kb_config = self._load_kb_config('notebooklm')
+
+        exam_type = self.exam_combo.currentText()
+        self.query_btn.setEnabled(False)
+        self.status_label.setText('正在查询中，请稍候...')
+        self.status_label.setStyleSheet("color: #3f7bf7; font-size: 12px;")
+
+        # 在后台线程中执行查询
+        from PyQt5.QtCore import QThread
+        self._query_thread = QThread()
+        self._query_worker = _DiagnosisWorker(exam_type, keywords, selected, kb_config)
+        self._query_worker.moveToThread(self._query_thread)
+        self._query_thread.started.connect(self._query_worker.run)
+        self._query_worker.finished.connect(self._on_query_finished)
+        self._query_worker.finished.connect(self._query_thread.quit)
+        self._query_thread.start()
+
+    def _on_query_finished(self, results):
+        """查询完成回调"""
+        self.query_btn.setEnabled(True)
+        self._results = results
+
+        # 收集所有知识库文档快照
+        self._kb_docs = []
+        seen = set()
+        for result in results.values():
+            for doc in result.get('kb_docs', []):
+                key = (doc.get('doc_name', ''), doc.get('page', ''), doc.get('snippet', '')[:50])
+                if key not in seen:
+                    seen.add(key)
+                    self._kb_docs.append(doc)
+
+        # 检查是否全部失败
+        all_failed = all(not r.get('success') for r in results.values())
+        if all_failed:
+            self.status_label.setText('查询失败')
+            self.status_label.setStyleSheet("color: #e64a3a; font-size: 12px;")
+            errors = '\n'.join(f'{k}: {v.get("error", "未知错误")}' for k, v in results.items())
+            QMessageBox.warning(self, '查询失败', f'所有大模型查询均失败：\n{errors}')
+            return
+
+        success_count = sum(1 for r in results.values() if r.get('success'))
+        kb_info = f'，引用{len(self._kb_docs)}篇文档' if self._kb_docs else ''
+        self.status_label.setText(f'查询完成，{success_count}/{len(results)}个模型成功{kb_info}')
+        self.status_label.setStyleSheet("color: #4ade80; font-size: 12px;")
+
+        # 清空结果列表（保留result_list_label）
+        while self.result_list_layout.count():
+            item = self.result_list_layout.takeAt(0)
+            w = item.widget()
+            if w and w is not self.result_list_label:
+                w.deleteLater()
+
+        self.result_list_layout.addWidget(self.result_list_label)
+
+        # 按大模型分列显示结果
+        for provider_name, result in results.items():
+            # 模型标题
+            title = QLabel(f'  {provider_name}')
+            title.setStyleSheet("""
+                color: #3f7bf7; font-size: 13px; font-weight: bold;
+                background: rgba(63,123,247,20); border-radius: 4px; padding: 4px 8px;
+            """)
+            self.result_list_layout.addWidget(title)
+
+            if not result.get('success'):
+                err_label = QLabel(f'    查询失败: {result.get("error", "未知错误")}')
+                err_label.setStyleSheet("color: #e64a3a; font-size: 11px; padding: 2px 8px;")
+                err_label.setWordWrap(True)
+                self.result_list_layout.addWidget(err_label)
+                continue
+
+            for i, item_data in enumerate(result.get('data', [])):
+                name = item_data.get('disease_name', f'诊断 #{i+1}')
+                confidence = item_data.get('confidence', '')
+                btn = QPushButton(f'    {name}  [{confidence}]')
+                btn.setFlat(True)
+                btn.setStyleSheet("""
+                    QPushButton { text-align: left; color: #c0c0c8; padding: 5px 8px;
+                                  border: none; border-radius: 4px; font-size: 12px; }
+                    QPushButton:hover { background: rgba(63,123,247,30); color: #e0e0e4; }
+                """)
+                btn.setProperty('diagnosis_data', item_data)
+                btn.setProperty('provider_name', provider_name)
+                btn.clicked.connect(lambda checked, d=item_data, p=provider_name: self._show_detail(d, p))
+                self.result_list_layout.addWidget(btn)
+
+        self.result_list_layout.addStretch()
+
+    def _show_detail(self, data, provider_name):
+        """显示诊断详情"""
+        fields = [
+            ('disease_name', '疾病名称'),
+            ('confidence', '置信度'),
+            ('imaging_findings', '影像学表现'),
+            ('report_template', '标准报告模板'),
+            ('differential_diagnosis', '鉴别诊断'),
+            ('clinical_manifestation', '临床表现'),
+            ('pathophysiology', '病理生理及症状学特征'),
+            ('treatment', '临床治疗方法'),
+        ]
+        html = f'<div style="font-family: Microsoft YaHei;">'
+        html += f'<h3 style="color:#3f7bf7; border-bottom:1px solid #2a2a30; padding-bottom:8px;">'
+        html += f'{data.get("disease_name", "未知")} <small style="color:#888890;">— {provider_name}</small></h3>'
+
+        for key, label in fields:
+            value = data.get(key, '')
+            if not value or key == 'disease_name':
+                continue
+            html += f'<h4 style="color:#5a91ff; margin-top:16px;">{label}</h4>'
+            html += f'<div style="color:#c0c0c8; line-height:1.8; padding:4px 8px; '
+            html += f'background:rgba(255,255,255,3); border-radius:4px; white-space:pre-wrap;">'
+            html += f'{value}</div>'
+
+        # 知识库文档快照区域
+        kb_docs = getattr(self, '_kb_docs', [])
+        if kb_docs:
+            html += f'<h4 style="color:#f59e0b; margin-top:20px; border-top:1px solid #2a2a30; padding-top:12px;">'
+            html += f'&#128218; 知识库参考文档 ({len(kb_docs)}篇)</h4>'
+            for i, doc in enumerate(kb_docs):
+                doc_name = doc.get('doc_name', '未知文档')
+                page = doc.get('page', '')
+                snippet = doc.get('snippet', '')
+                url = doc.get('url', '')
+                source = doc.get('source', '')
+
+                # 文档卡片
+                html += f'<div style="margin:8px 0; padding:10px 12px; background:rgba(245,158,11,8); '
+                html += f'border:1px solid rgba(245,158,11,25); border-radius:6px; '
+                html += f'border-left:3px solid #f59e0b;">'
+
+                # 文档名称和页码
+                html += f'<div style="color:#f59e0b; font-weight:bold; font-size:13px;">'
+                if url:
+                    html += f'<a href="{url}" style="color:#f59e0b; text-decoration:none;">{doc_name}</a>'
+                else:
+                    html += f'{doc_name}'
+                if page:
+                    html += f' <span style="color:#888890; font-weight:normal; font-size:11px;">第{page}页</span>'
+                html += f'</div>'
+
+                # 来源标签
+                if source:
+                    html += f'<span style="display:inline-block; margin-top:4px; padding:1px 6px; '
+                    html += f'background:rgba(63,123,247,15); color:#5a91ff; border-radius:3px; font-size:10px;">{source}</span>'
+
+                # 内容片段
+                if snippet:
+                    html += f'<div style="color:#a0a0a8; font-size:12px; margin-top:6px; '
+                    html += f'line-height:1.6; white-space:pre-wrap; max-height:80px; overflow:hidden;">{snippet}</div>'
+
+                # 链接按钮
+                if url:
+                    html += f'<div style="margin-top:6px;">'
+                    html += f'<a href="{url}" style="color:#3f7bf7; font-size:11px; text-decoration:none;">'
+                    html += f'&#128279; 查看原文</a></div>'
+
+                html += f'</div>'
+
+        html += '</div>'
+        self.detail_browser.setHtml(html)
+        # 发出信号
+        self.diagnosis_clicked.emit(data)
+
+    def _show_kb_config(self, checked=False):
+        """显示知识库配置"""
+        dlg = _KBConfigDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            pass
+
+    def _load_kb_config(self, kb_type):
+        """加载知识库配置"""
+        config = load_config()
+        kb_configs = config.get('knowledge_bases', {})
+        return kb_configs.get(kb_type, {'type': kb_type, 'api_key': ''})
+
+
+class _DiagnosisWorker(QObject):
+    """后台诊断查询工作线程"""
+    finished = pyqtSignal(dict)
+
+    def __init__(self, exam_type, keywords, selected_providers, kb_config):
+        super().__init__()
+        self.exam_type = exam_type
+        self.keywords = keywords
+        self.selected_providers = selected_providers
+        self.kb_config = kb_config
+
+    def run(self):
+        try:
+            results = call_diagnosis_multi(
+                self.exam_type, self.keywords,
+                selected_providers=self.selected_providers,
+                use_knowledge_base=self.kb_config
+            )
+            self.finished.emit(results)
+        except Exception as e:
+            self.finished.emit({'错误': {'success': False, 'data': [], 'error': str(e)}})
+
+
+class _KBConfigDialog(QDialog):
+    """知识库配置对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('知识库配置')
+        self.setMinimumSize(520, 520)
+        self._init_ui()
+
+    @staticmethod
+    def _add_password_field(layout, label, line_edit):
+        """为密码输入框添加可见性切换按钮"""
+        row_layout = QHBoxLayout()
+        row_layout.setSpacing(4)
+        row_layout.addWidget(line_edit, stretch=1)
+
+        toggle_btn = QPushButton()
+        toggle_btn.setFixedSize(28, 28)
+        toggle_btn.setCursor(Qt.PointingHandCursor)
+        toggle_btn.setToolTip('显示/隐藏')
+        toggle_btn.setStyleSheet("""
+            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; }
+            QPushButton:hover { color: #c0c0c8; }
+        """)
+        # 绘制眼睛图标
+        toggle_btn.setText('\U0001F441')
+        toggle_btn.setCheckable(True)
+        toggle_btn.setChecked(False)
+
+        def _toggle_visibility(checked):
+            line_edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+
+        toggle_btn.clicked.connect(_toggle_visibility)
+        row_layout.addWidget(toggle_btn)
+        layout.addRow(label, row_layout)
+
+    def _init_ui(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        config = load_config()
+        kb_configs = config.get('knowledge_bases', {})
+        group_style = """
+            QGroupBox { color: #b0b0b8; font-weight: bold; border: 1px solid #2a2a30;
+                        border-radius: 6px; margin-top: 8px; padding-top: 16px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
+        """
+
+        # 腾讯知识库
+        tencent_group = QGroupBox('腾讯知识库')
+        tencent_group.setStyleSheet(group_style)
+        tencent_layout = QFormLayout(tencent_group)
+        tencent_cfg = kb_configs.get('tencent', {})
+        self.tencent_api_key = QLineEdit(tencent_cfg.get('api_key', ''))
+        self.tencent_api_key.setEchoMode(QLineEdit.Password)
+        self.tencent_api_key.setPlaceholderText('腾讯云API Key')
+        self._add_password_field(tencent_layout, 'API Key:', self.tencent_api_key)
+        self.tencent_bot_id = QLineEdit(tencent_cfg.get('bot_id', ''))
+        self.tencent_bot_id.setPlaceholderText('知识库应用ID (BotId)')
+        tencent_layout.addRow('应用ID:', self.tencent_bot_id)
+        layout.addWidget(tencent_group)
+
+        # 火山方舟知识库
+        volc_group = QGroupBox('火山方舟知识库')
+        volc_group.setStyleSheet(group_style)
+        volc_layout = QFormLayout(volc_group)
+        volc_cfg = kb_configs.get('volcengine', {})
+        self.volc_api_key = QLineEdit(volc_cfg.get('api_key', ''))
+        self.volc_api_key.setEchoMode(QLineEdit.Password)
+        self.volc_api_key.setPlaceholderText('火山引擎API Key')
+        self._add_password_field(volc_layout, 'API Key:', self.volc_api_key)
+        self.volc_endpoint_id = QLineEdit(volc_cfg.get('endpoint_id', ''))
+        self.volc_endpoint_id.setPlaceholderText('推理接入点ID (EndpointId)')
+        volc_layout.addRow('接入点ID:', self.volc_endpoint_id)
+        self.volc_collection = QLineEdit(volc_cfg.get('collection_name', ''))
+        self.volc_collection.setPlaceholderText('知识库集合名称 (可选)')
+        volc_layout.addRow('集合名称:', self.volc_collection)
+        layout.addWidget(volc_group)
+
+        # Google NotebookLM
+        nblm_group = QGroupBox('Google NotebookLM')
+        nblm_group.setStyleSheet(group_style)
+        nblm_layout = QFormLayout(nblm_group)
+        nblm_cfg = kb_configs.get('notebooklm', {})
+        self.nblm_api_key = QLineEdit(nblm_cfg.get('api_key', ''))
+        self.nblm_api_key.setEchoMode(QLineEdit.Password)
+        self.nblm_api_key.setPlaceholderText('Google AI Studio API Key')
+        self._add_password_field(nblm_layout, 'API Key:', self.nblm_api_key)
+        self.nblm_corpus_id = QLineEdit(nblm_cfg.get('corpus_id', ''))
+        self.nblm_corpus_id.setPlaceholderText('语料库ID (Corpus ID, 可选)')
+        nblm_layout.addRow('语料库ID:', self.nblm_corpus_id)
+        nblm_hint = QLabel('需在 Google AI Studio 获取 API Key。\n无 Corpus ID 时将使用 Google Search 检索。')
+        nblm_hint.setStyleSheet("color: #666670; font-size: 11px;")
+        nblm_hint.setWordWrap(True)
+        nblm_layout.addRow(nblm_hint)
+        layout.addWidget(nblm_group)
+
+        layout.addSpacing(10)
+
+        # 按钮
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton('保存')
+        save_btn.clicked.connect(self._save)
+        cancel_btn = QPushButton('取消')
+        cancel_btn.setObjectName('mutedBtn')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+        scroll.setWidget(content)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
+
+    def _save(self, checked=False):
+        config = load_config()
+        if 'knowledge_bases' not in config:
+            config['knowledge_bases'] = {}
+        config['knowledge_bases']['tencent'] = {
+            'type': 'tencent',
+            'api_key': self.tencent_api_key.text().strip(),
+            'bot_id': self.tencent_bot_id.text().strip(),
+        }
+        config['knowledge_bases']['volcengine'] = {
+            'type': 'volcengine',
+            'api_key': self.volc_api_key.text().strip(),
+            'endpoint_id': self.volc_endpoint_id.text().strip(),
+            'collection_name': self.volc_collection.text().strip(),
+        }
+        config['knowledge_bases']['notebooklm'] = {
+            'type': 'notebooklm',
+            'api_key': self.nblm_api_key.text().strip(),
+            'corpus_id': self.nblm_corpus_id.text().strip(),
+        }
+        save_config(config)
+        QMessageBox.information(self, '成功', '知识库配置已保存')
         self.accept()
 
 
@@ -847,7 +1488,7 @@ class DiseaseDialog(QDialog):
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
-    def _ai_fill(self):
+    def _ai_fill(self, checked=False):
         name_cn = self.inputs['name_cn'].text().strip()
         if not name_cn:
             QMessageBox.warning(self, '提示', '请先输入疾病中文名')
@@ -944,7 +1585,17 @@ class UserManageDialog(QDialog):
         self.new_password = QLineEdit()
         self.new_password.setPlaceholderText('密码')
         self.new_password.setEchoMode(QLineEdit.Password)
-        add_form.addWidget(self.new_password)
+        pwd_row = QHBoxLayout()
+        pwd_row.addWidget(self.new_password, stretch=1)
+        new_pwd_toggle = QPushButton()
+        new_pwd_toggle.setFixedSize(24, 24)
+        new_pwd_toggle.setCursor(Qt.PointingHandCursor)
+        new_pwd_toggle.setText('\U0001F441')
+        new_pwd_toggle.setCheckable(True)
+        new_pwd_toggle.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
+        new_pwd_toggle.clicked.connect(lambda checked: self.new_password.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        pwd_row.addWidget(new_pwd_toggle)
+        add_form.addLayout(pwd_row)
         layout.addLayout(add_form)
 
         role_row = QHBoxLayout()
@@ -980,7 +1631,7 @@ class UserManageDialog(QDialog):
     def _on_user_selected(self, current, previous):
         pass
 
-    def _edit_user(self):
+    def _edit_user(self, checked=False):
         item = self.user_list.currentItem()
         if not item:
             QMessageBox.warning(self, '提示', '请先选择一个用户')
@@ -991,7 +1642,7 @@ class UserManageDialog(QDialog):
         if dlg.exec_() == QDialog.Accepted:
             self._load_users()
 
-    def _add_user(self):
+    def _add_user(self, checked=False):
         username = self.new_username.text().strip()
         password = self.new_password.text().strip()
         if not username or not password:
@@ -1011,7 +1662,7 @@ class UserManageDialog(QDialog):
         self.new_password.clear()
         QMessageBox.information(self, '成功', f'用户 {username} 已创建')
 
-    def _delete_user(self):
+    def _delete_user(self, checked=False):
         item = self.user_list.currentItem()
         if not item:
             return
@@ -1053,18 +1704,38 @@ class EditUserDialog(QDialog):
         self.new_pwd_input = QLineEdit()
         self.new_pwd_input.setPlaceholderText('新密码')
         self.new_pwd_input.setEchoMode(QLineEdit.Password)
-        layout.addWidget(self.new_pwd_input)
+        new_pwd_row1 = QHBoxLayout()
+        new_pwd_row1.addWidget(self.new_pwd_input, stretch=1)
+        pwd_toggle1 = QPushButton()
+        pwd_toggle1.setFixedSize(24, 24)
+        pwd_toggle1.setCursor(Qt.PointingHandCursor)
+        pwd_toggle1.setText('\U0001F441')
+        pwd_toggle1.setCheckable(True)
+        pwd_toggle1.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
+        pwd_toggle1.clicked.connect(lambda checked: self.new_pwd_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        new_pwd_row1.addWidget(pwd_toggle1)
+        layout.addLayout(new_pwd_row1)
 
         self.confirm_pwd_input = QLineEdit()
         self.confirm_pwd_input.setPlaceholderText('确认新密码')
         self.confirm_pwd_input.setEchoMode(QLineEdit.Password)
-        layout.addWidget(self.confirm_pwd_input)
+        new_pwd_row2 = QHBoxLayout()
+        new_pwd_row2.addWidget(self.confirm_pwd_input, stretch=1)
+        pwd_toggle2 = QPushButton()
+        pwd_toggle2.setFixedSize(24, 24)
+        pwd_toggle2.setCursor(Qt.PointingHandCursor)
+        pwd_toggle2.setText('\U0001F441')
+        pwd_toggle2.setCheckable(True)
+        pwd_toggle2.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
+        pwd_toggle2.clicked.connect(lambda checked: self.confirm_pwd_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        new_pwd_row2.addWidget(pwd_toggle2)
+        layout.addLayout(new_pwd_row2)
 
         pwd_btn = QPushButton('修改密码')
         pwd_btn.clicked.connect(self._change_pwd)
         layout.addWidget(pwd_btn)
 
-    def _rename(self):
+    def _rename(self, checked=False):
         new_name = self.new_name_input.text().strip()
         if not new_name:
             QMessageBox.warning(self, '提示', '用户名不能为空')
@@ -1078,7 +1749,7 @@ class EditUserDialog(QDialog):
         else:
             QMessageBox.warning(self, '错误', '用户名已存在')
 
-    def _change_pwd(self):
+    def _change_pwd(self, checked=False):
         new_pwd = self.new_pwd_input.text().strip()
         confirm = self.confirm_pwd_input.text().strip()
         if not new_pwd:
@@ -1270,29 +1941,29 @@ class ImageViewerDialog(QDialog):
             self.viewer_canvas.offset = QPoint(0, 0)
             self.viewer_canvas.update()
 
-    def _prev_image(self):
+    def _prev_image(self, checked=False):
         if self.current_index > 0:
             self.current_index -= 1
             self._load_current()
 
-    def _next_image(self):
+    def _next_image(self, checked=False):
         if self.current_index < len(self.image_paths) - 1:
             self.current_index += 1
             self._load_current()
 
-    def _zoom_in(self):
+    def _zoom_in(self, checked=False):
         self.scale = min(self.scale * 1.25, 5.0)
         self.viewer_canvas.scale = self.scale
         self.zoom_label.setText(f'{int(self.scale * 100)}%')
         self.viewer_canvas.update()
 
-    def _zoom_out(self):
+    def _zoom_out(self, checked=False):
         self.scale = max(self.scale / 1.25, 0.1)
         self.viewer_canvas.scale = self.scale
         self.zoom_label.setText(f'{int(self.scale * 100)}%')
         self.viewer_canvas.update()
 
-    def _zoom_fit(self):
+    def _zoom_fit(self, checked=False):
         if self.viewer_canvas.pixmap:
             cw = self.viewer_canvas.width()
             ch = self.viewer_canvas.height()
@@ -1305,14 +1976,14 @@ class ImageViewerDialog(QDialog):
                 self.zoom_label.setText(f'{int(self.scale * 100)}%')
                 self.viewer_canvas.update()
 
-    def _zoom_original(self):
+    def _zoom_original(self, checked=False):
         self.scale = 1.0
         self.viewer_canvas.scale = 1.0
         self.viewer_canvas.offset = QPoint(0, 0)
         self.zoom_label.setText('100%')
         self.viewer_canvas.update()
 
-    def _enter_edit(self):
+    def _enter_edit(self, checked=False):
         self._open_editor()
 
     def _open_editor(self):
@@ -1461,7 +2132,7 @@ class _ViewerCanvas(QWidget):
 
 class _ToolButton(QWidget):
     """浮动工具栏中的图标按钮"""
-    clicked = pyqtSignal()
+    clicked = pyqtSignal(bool)
 
     def __init__(self, tool_id, parent=None):
         super().__init__(parent)
@@ -1568,12 +2239,12 @@ class _ToolButton(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit()
+            self.clicked.emit(True)
 
 
 class _ActionBtn(QWidget):
     """浮动工具栏中的操作按钮（撤销、清空、保存、返回）"""
-    clicked = pyqtSignal()
+    clicked = pyqtSignal(bool)
 
     def __init__(self, action_id, parent=None):
         super().__init__(parent)
@@ -1640,7 +2311,7 @@ class _ActionBtn(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit()
+            self.clicked.emit(True)
 
 
 class _FloatingToolbar(QWidget):
@@ -1680,7 +2351,7 @@ class _FloatingToolbar(QWidget):
         for tid, shortcut, name in self.SELECT_TOOLS:
             btn = _ToolButton(tid, self)
             btn.setToolTip(f'{name} ({shortcut})')
-            btn.clicked.connect(lambda t=tid: self._on_tool(t))
+            btn.clicked.connect(lambda checked, t=tid: self._on_tool(t))
             self.tool_btns[tid] = btn
             layout.addWidget(btn, alignment=Qt.AlignCenter)
 
@@ -1690,7 +2361,7 @@ class _FloatingToolbar(QWidget):
         for tid, shortcut, name in self.DRAW_TOOLS:
             btn = _ToolButton(tid, self)
             btn.setToolTip(f'{name} ({shortcut})')
-            btn.clicked.connect(lambda t=tid: self._on_tool(t))
+            btn.clicked.connect(lambda checked, t=tid: self._on_tool(t))
             self.tool_btns[tid] = btn
             layout.addWidget(btn, alignment=Qt.AlignCenter)
 
@@ -1700,7 +2371,7 @@ class _FloatingToolbar(QWidget):
         for tid, shortcut, name in self.EDIT_TOOLS:
             btn = _ToolButton(tid, self)
             btn.setToolTip(f'{name} ({shortcut})')
-            btn.clicked.connect(lambda t=tid: self._on_tool(t))
+            btn.clicked.connect(lambda checked, t=tid: self._on_tool(t))
             self.tool_btns[tid] = btn
             layout.addWidget(btn, alignment=Qt.AlignCenter)
 
@@ -1815,7 +2486,7 @@ _ANNOTATION_STYLES = [('solid', '实线'), ('dashed', '虚线'), ('dotted', '点
 
 class _WidthBtn(QWidget):
     """线宽选择按钮 - 用不同粗细的水平线表示"""
-    clicked = pyqtSignal()
+    clicked = pyqtSignal(bool)
 
     def __init__(self, width_val, parent=None):
         super().__init__(parent)
@@ -1860,12 +2531,12 @@ class _WidthBtn(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit()
+            self.clicked.emit(True)
 
 
 class _LineStyleBtn(QWidget):
     """线型选择按钮 - 用不同样式的线段表示"""
-    clicked = pyqtSignal()
+    clicked = pyqtSignal(bool)
 
     def __init__(self, style_id, parent=None):
         super().__init__(parent)
@@ -1940,7 +2611,7 @@ class _LineStyleBtn(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit()
+            self.clicked.emit(True)
 
 
 class _StyleBar(QWidget):
@@ -1998,7 +2669,7 @@ class _StyleBar(QWidget):
             btn = _WidthBtn(w)
             btn.setToolTip(f'{w}px')
             btn.set_selected(i == self.current_width_idx)
-            btn.clicked.connect(lambda idx=i: self._on_width(idx))
+            btn.clicked.connect(lambda checked, idx=i: self._on_width(idx))
             self.width_btns.append(btn)
             layout.addWidget(btn)
 
@@ -2015,7 +2686,7 @@ class _StyleBar(QWidget):
             btn = _LineStyleBtn(style_id)
             btn.setToolTip(style_text)
             btn.set_selected(i == self.current_style_idx)
-            btn.clicked.connect(lambda idx=i: self._on_style(idx))
+            btn.clicked.connect(lambda checked, idx=i: self._on_style(idx))
             self.style_btns.append(btn)
             layout.addWidget(btn)
 
@@ -2356,7 +3027,7 @@ class ImageEditorDialog(QDialog):
         layout.setSpacing(0)
 
         # 自定义标题栏
-        self.title_bar = _CustomTitleBar(self, '图片编辑器')
+        self.title_bar = _CustomTitleBar(self, '图片编辑器  |  楚雄州人民医院 医学影像中心 张兴文')
         layout.addWidget(self.title_bar)
 
         # 信息栏
@@ -2589,7 +3260,7 @@ class ImageEditorDialog(QDialog):
                 self.toolbar.set_zoom_pct(int(self.scale * 100))
                 self.canvas.update()
 
-    def _zoom_original(self):
+    def _zoom_original(self, checked=False):
         self.scale = 1.0
         self.canvas.scale = 1.0
         self.canvas.offset = QPoint(0, 0)
@@ -2614,6 +3285,7 @@ class ImageEditorDialog(QDialog):
     def _auto_save(self):
         """自动保存当前编辑"""
         self.canvas.save_annotated(self.image_path)
+        self.image_updated.emit(self.image_path)
 
     def _trigger_auto_save(self):
         """触发自动保存（延迟1秒）"""
@@ -3241,6 +3913,7 @@ class _EditorCanvas(QWidget):
                 self._drag_start_pos = event.pos()
                 self._drag_start_data = dict(self.annotations[idx][1])
                 self._drag_annot_start_img_pos = (img_x, img_y)
+                self.setCursor(Qt.ClosedHandCursor)
             else:
                 self.selected_index = -1
                 self.editor.hide_property_panel()
@@ -3350,6 +4023,40 @@ class _EditorCanvas(QWidget):
         elif self.drawing:
             self.draw_current = event.pos()
             self.update()
+        elif self.tool == 'select':
+            # 选择工具时根据鼠标位置切换光标
+            if 0 <= self.selected_index < len(self.annotations):
+                _, sel_data = self.annotations[self.selected_index]
+                handle = self._hit_handle(event.pos(), sel_data)
+                if handle >= 0:
+                    # 手柄光标
+                    self.setCursor(self._cursor_for_handle(handle))
+                else:
+                    # 检查是否在注释内部
+                    img_x, img_y = self._img_coords(event.pos())
+                    idx = self._find_annotation_at(img_x, img_y)
+                    if idx == self.selected_index:
+                        self.setCursor(Qt.OpenHandCursor)
+                    else:
+                        self.setCursor(Qt.ArrowCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+
+    def _cursor_for_handle(self, handle):
+        """根据手柄索引返回对应的光标样式"""
+        # 手柄顺序: 0=TL, 1=T, 2=TR, 3=R, 4=BR, 5=B, 6=BL, 7=L, 8=旋转
+        cursors = {
+            0: Qt.SizeFDiagCursor,   # TL
+            1: Qt.SizeVerCursor,     # T
+            2: Qt.SizeBDiagCursor,   # TR
+            3: Qt.SizeHorCursor,     # R
+            4: Qt.SizeFDiagCursor,   # BR
+            5: Qt.SizeVerCursor,     # B
+            6: Qt.SizeBDiagCursor,   # BL
+            7: Qt.SizeHorCursor,     # L
+            8: Qt.CrossCursor,       # 旋转
+        }
+        return cursors.get(handle, Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
@@ -3368,6 +4075,7 @@ class _EditorCanvas(QWidget):
             self._drag_start_pos = None
             self._drag_start_data = None
             self._drag_annot_start_img_pos = None
+            self.setCursor(Qt.OpenHandCursor)
             return
 
         if self.dragging:
@@ -3688,110 +4396,860 @@ class _ImageLabel(QWidget):
         self.double_clicked.emit(self.img_id, self.img_path)
 
 
-class _ImageEditableTextEdit(QTextEdit):
-    """支持图片选中、缩放和拖动的富文本编辑器"""
+class _DraggableTextBox(QWidget):
+    """可拖拽的文本框组件（Office 风格，8方向手柄）"""
+    removed = pyqtSignal()
+    HANDLE_SIZE = 8
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(150, 80)
+        self._dragging = False
+        self._resize_mode = None  # 当前拖动的手柄
+        self._drag_start = None
+        self._resize_start_pos = None
+        self._resize_start_rect = None
+        self.setMouseTracking(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        # 文本编辑器
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText('输入文本...')
+        self.text_edit.setContextMenuPolicy(Qt.NoContextMenu)
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background: transparent; border: none;
+                color: #e0e0e4; font-size: 12px;
+            }
+        """)
+        layout.addWidget(self.text_edit)
+        # 将text_edit的右键事件转发到父组件
+        self.text_edit.installEventFilter(self)
+
+        # 右键菜单
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _get_handles(self):
+        """获取8个手柄的位置和类型"""
+        r = self.rect()
+        hs = self.HANDLE_SIZE
+        cx = r.left() + r.width() // 2
+        cy = r.top() + r.height() // 2
+        return {
+            'top-left': QRect(r.left(), r.top(), hs, hs),
+            'top': QRect(cx - hs // 2, r.top(), hs, hs),
+            'top-right': QRect(r.right() - hs, r.top(), hs, hs),
+            'right': QRect(r.right() - hs, cy - hs // 2, hs, hs),
+            'bottom-right': QRect(r.right() - hs, r.bottom() - hs, hs, hs),
+            'bottom': QRect(cx - hs // 2, r.bottom() - hs, hs, hs),
+            'bottom-left': QRect(r.left(), r.bottom() - hs, hs, hs),
+            'left': QRect(r.left(), cy - hs // 2, hs, hs),
+        }
+
+    def _hit_handle(self, pos):
+        """检查鼠标位置是否在手柄上"""
+        for name, hrect in self._get_handles().items():
+            if hrect.contains(pos):
+                return name
+        return None
+
+    def _cursor_for_handle(self, handle):
+        """根据手柄位置返回光标样式"""
+        return {
+            'top-left': Qt.SizeFDiagCursor,
+            'bottom-right': Qt.SizeFDiagCursor,
+            'top-right': Qt.SizeBDiagCursor,
+            'bottom-left': Qt.SizeBDiagCursor,
+            'top': Qt.SizeVerCursor,
+            'bottom': Qt.SizeVerCursor,
+            'left': Qt.SizeHorCursor,
+            'right': Qt.SizeHorCursor,
+        }.get(handle, Qt.ArrowCursor)
+
+    def eventFilter(self, obj, event):
+        """将text_edit的右键事件转发到_DraggableTextBox"""
+        if obj == self.text_edit:
+            if event.type() == event.ContextMenu:
+                # 转发右键菜单事件
+                self._show_context_menu(event.pos())
+                return True
+        return super().eventFilter(obj, event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 半透明背景
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(40, 40, 46, 200))
+        painter.drawRoundedRect(self.rect(), 4, 4)
+        # 边框
+        painter.setPen(QPen(QColor(63, 123, 247), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(self.rect(), 4, 4)
+        # 8个手柄
+        hs = self.HANDLE_SIZE
+        painter.setPen(QPen(QColor(63, 123, 247), 1))
+        painter.setBrush(QColor(255, 255, 255))
+        for name, hrect in self._get_handles().items():
+            painter.drawRect(hrect)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            # 检查是否点击手柄
+            handle = self._hit_handle(event.pos())
+            if handle:
+                self._resize_mode = handle
+                self._resize_start_pos = event.globalPos()
+                self._resize_start_rect = QRect(self.pos(), self.size())
+                self.setCursor(self._cursor_for_handle(handle))
+                event.accept()
+                return
+            # 否则开始拖动
+            self._dragging = True
+            self._drag_start = event.globalPos() - self.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resize_mode and self._resize_start_pos and self._resize_start_rect:
+            delta = event.globalPos() - self._resize_start_pos
+            sr = self._resize_start_rect
+            mode = self._resize_mode
+            min_w, min_h = 150, 80
+
+            new_x, new_y = sr.x(), sr.y()
+            new_w, new_h = sr.width(), sr.height()
+
+            # 横向缩放
+            if mode == 'right':
+                new_w = max(min_w, sr.width() + delta.x())
+            elif mode == 'left':
+                new_w = max(min_w, sr.width() - delta.x())
+                new_x = sr.right() - new_w
+            # 纵向缩放
+            elif mode == 'bottom':
+                new_h = max(min_h, sr.height() + delta.y())
+            elif mode == 'top':
+                new_h = max(min_h, sr.height() - delta.y())
+                new_y = sr.bottom() - new_h
+            # 角点等比缩放
+            elif mode in ('top-left', 'top-right', 'bottom-left', 'bottom-right'):
+                if mode in ('bottom-right', 'top-right'):
+                    new_w = max(min_w, sr.width() + delta.x())
+                if mode in ('bottom-left', 'top-left'):
+                    new_w = max(min_w, sr.width() - delta.x())
+                    new_x = sr.right() - new_w
+                if mode in ('bottom', 'bottom-left', 'bottom-right'):
+                    new_h = max(min_h, sr.height() + delta.y())
+                if mode in ('top', 'top-left', 'top-right'):
+                    new_h = max(min_h, sr.height() - delta.y())
+                    new_y = sr.bottom() - new_h
+                # 等比缩放
+                ratio = sr.width() / max(1, sr.height())
+                new_h = max(min_h, int(new_w / ratio))
+                if mode in ('top', 'top-left', 'top-right'):
+                    new_y = sr.bottom() - new_h
+
+            self.move(new_x, new_y)
+            self.resize(new_w, new_h)
+            event.accept()
+        elif self._dragging:
+            self.move(event.globalPos() - self._drag_start)
+            event.accept()
+        else:
+            # 悬停时切换光标
+            handle = self._hit_handle(event.pos())
+            if handle:
+                self.setCursor(self._cursor_for_handle(handle))
+            elif self.rect().contains(event.pos()):
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resize_mode:
+            self._resize_mode = None
+            self._resize_start_pos = None
+            self._resize_start_rect = None
+        if self._dragging:
+            self._dragging = False
+            self._drag_start = None
+            self.setCursor(Qt.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+        
+    def _show_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2a2a30; color: #c8c8cc;
+                border: 1px solid #444; padding: 4px;
+            }
+            QMenu::item { padding: 6px 20px; border-radius: 3px; }
+            QMenu::item:selected { background-color: #3f7bf7; }
+        """)
+        
+        act_font = menu.addAction('字体设置')
+        act_remove = menu.addAction('删除文本框')
+        
+        action = menu.exec_(self.mapToGlobal(pos))
+        if action == act_font:
+            self._show_font_dialog()
+        elif action == act_remove:
+            self.removed.emit()
+            self.deleteLater()
+            
+    def _show_font_dialog(self):
+        """简单字体设置对话框"""
+        from PyQt5.QtWidgets import QFontDialog
+        font, ok = QFontDialog.getFont(self.text_edit.font(), self)
+        if ok:
+            self.text_edit.setFont(font)
+
+
+class _OfficeImageToolbar(QWidget):
+    """Office 风格浮动图片工具栏"""
+    toolbar_action = pyqtSignal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._selected_image_format = None
-        self._selected_image_pos = None
-        self._image_dragging = False
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(360, 48)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(2)
+        
+        # 尺寸调整
+        layout.addWidget(QLabel('尺寸:'))
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(10, 5000)
+        self.width_spin.setSuffix(' px')
+        self.width_spin.setFixedWidth(80)
+        self.width_spin.valueChanged.connect(lambda: self.toolbar_action.emit('resize'))
+        layout.addWidget(self.width_spin)
+        
+        self.height_spin = QSpinBox()
+        self.height_spin.setRange(10, 5000)
+        self.height_spin.setSuffix(' px')
+        self.height_spin.setFixedWidth(80)
+        self.height_spin.valueChanged.connect(lambda: self.toolbar_action.emit('resize'))
+        layout.addWidget(self.height_spin)
+        
+        # 环绕方式
+        layout.addSpacing(8)
+        layout.addWidget(QLabel('环绕:'))
+        self.wrap_combo = QComboBox()
+        self.wrap_combo.addItems(['嵌入型', '四周型', '紧密型', '浮于上方', '衬于下方'])
+        self.wrap_combo.setFixedWidth(90)
+        self.wrap_combo.currentIndexChanged.connect(lambda: self.toolbar_action.emit('wrap'))
+        layout.addWidget(self.wrap_combo)
+        
+        # 应用通用样式
+        for w in [self.width_spin, self.height_spin, self.wrap_combo]:
+            w.setStyleSheet("""
+                QSpinBox, QComboBox {
+                    background: rgba(50,50,56,250); color: #e0e0e4;
+                    border: 1px solid #555; border-radius: 3px;
+                    padding: 2px 4px; font-size: 11px;
+                }
+            """)
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(40, 40, 46, 245))
+        painter.drawRoundedRect(self.rect(), 6, 6)
+        painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 6, 6)
+        
+    def set_image_size(self, width, height):
+        self.width_spin.blockSignals(True)
+        self.height_spin.blockSignals(True)
+        self.width_spin.setValue(int(width))
+        self.height_spin.setValue(int(height))
+        self.width_spin.blockSignals(False)
+        self.height_spin.blockSignals(False)
+        
+    def get_image_size(self):
+        return self.width_spin.value(), self.height_spin.value()
+        
+    def get_wrap_mode(self):
+        modes = ['inline', 'square', 'tight', 'front', 'behind']
+        return modes[self.wrap_combo.currentIndex()]
+
+
+class _ImageEditableTextEdit(QTextEdit):
+    """支持图片选中、调整尺寸和右键菜单的富文本编辑器（Office 风格）"""
+    image_selected = pyqtSignal(str, int, int)  # 图片名, 宽度, 高度
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 选中图片状态
+        self._selected_image_name = None  # 选中图片的资源名
+        self._selected_image_pos = -1     # 选中图片在文档中的位置
+        self._selected_image_rect = None  # 图片在视口中的矩形
+        # 调整尺寸状态
+        self._resize_handle_size = 8
+        self._resize_mode = None
+        self._resize_start_pos = None
+        self._resize_start_rect = None
+        # 拖动状态
+        self._dragging_image = False
         self._drag_start_pos = None
-        self._image_scale = 1.0
-        self._scale_step = 0.1
-        
+        self._drag_cursor_pos = None
+        # 当前工具（保留接口，但默认就是选中模式）
+        self._current_tool = 'image_select'
+        self._wrap_mode = 'inline'
+        # Office 风格工具栏
+        self._office_toolbar = None
+
+        # 设置滚动条策略
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        # 安装事件过滤器以捕获viewport上的鼠标移动事件（用于光标切换）
+        self.viewport().installEventFilter(self)
+
+    def set_image_tool(self, tool_id):
+        """设置当前图像编辑工具（兼容接口）"""
+        self._current_tool = tool_id
+        if tool_id == 'image_delete' and self._selected_image_name:
+            self._delete_selected_image()
+            return
+        # 其它工具默认行为：保持选中模式
+        self.setCursor(Qt.IBeamCursor)
+
+    def eventFilter(self, obj, event):
+        """捕获viewport上的鼠标移动事件，用于手柄光标切换"""
+        if obj == self.viewport():
+            if event.type() == event.MouseMove and not self._resize_mode and not self._dragging_image:
+                if self._selected_image_rect:
+                    handle = self._hit_resize_handle(event.pos())
+                    if handle:
+                        self.viewport().setCursor(self._cursor_for_handle(handle))
+                    elif self._selected_image_rect.contains(event.pos()):
+                        self.viewport().setCursor(Qt.OpenHandCursor)
+                    else:
+                        self.viewport().setCursor(Qt.IBeamCursor)
+                else:
+                    self.viewport().setCursor(Qt.IBeamCursor)
+        return super().eventFilter(obj, event)
+
+    def set_image_wrap_mode(self, mode):
+        """设置图片环绕方式 - 通过修改文档HTML实现"""
+        self._wrap_mode = mode
+        if self._selected_image_pos < 0 or not self._selected_image_name:
+            return
+        # 保存当前光标位置
+        saved_cursor = self.textCursor()
+        # 获取当前图片格式
+        cur = QTextCursor(self.document())
+        cur.setPosition(self._selected_image_pos)
+        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+        fmt = cur.charFormat()
+        if not fmt.isImageFormat():
+            return
+        img_fmt = fmt.toImageFormat()
+        img_name = img_fmt.name()
+        img_w = int(img_fmt.width()) if img_fmt.width() > 0 else 0
+        img_h = int(img_fmt.height()) if img_fmt.height() > 0 else 0
+
+        # 构建新的HTML片段
+        size_attr = ''
+        if img_w > 0 and img_h > 0:
+            size_attr = f' width="{img_w}" height="{img_h}"'
+
+        html_map = {
+            'inline': f'<img src="{img_name}"{size_attr} />',
+            'square': f'<img src="{img_name}"{size_attr} style="float:left; margin:0 8px 8px 0;" />',
+            'tight': f'<img src="{img_name}"{size_attr} style="float:left; margin:0 4px 4px 0;" />',
+            'through': f'<img src="{img_name}"{size_attr} style="float:left; margin:0;" />',
+            'topAndBottom': f'<img src="{img_name}"{size_attr} style="display:block; margin:8px auto;" />',
+            'behind': f'<img src="{img_name}"{size_attr} style="float:left; position:relative; z-index:-1;" />',
+            'front': f'<img src="{img_name}"{size_attr} style="float:left; position:relative; z-index:1;" />',
+        }
+        html = html_map.get(mode, f'<img src="{img_name}"{size_attr} />')
+
+        # 替换图片
+        cur.insertHtml(html)
+        # 重新查找图片位置
+        self._selected_image_pos = -1
+        self._selected_image_rect = None
+        # 重新定位图片
+        block = self.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().isImageFormat():
+                    if frag.charFormat().toImageFormat().name() == img_name:
+                        self._selected_image_pos = frag.position()
+                        self._selected_image_rect = self._image_view_rect(frag.position())
+                        break
+                it += 1
+            if self._selected_image_pos >= 0:
+                break
+            block = block.next()
+        # 恢复光标
+        self.setTextCursor(saved_cursor)
+        self.viewport().update()
+
+    def _find_image_at(self, pos):
+        """在视口的指定位置查找图片，返回 (image_name, doc_position, view_rect) 或 (None, -1, None)"""
+        cursor = self.cursorForPosition(pos)
+        doc_pos = cursor.position()
+        # 检查光标右侧字符
+        cur_right = QTextCursor(self.document())
+        cur_right.setPosition(doc_pos)
+        cur_right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+        fmt = cur_right.charFormat()
+        if fmt.isImageFormat():
+            img_name = fmt.toImageFormat().name()
+            rect = self._image_view_rect(doc_pos)
+            return img_name, doc_pos, rect
+        # 检查光标左侧字符
+        if doc_pos > 0:
+            cur_left = QTextCursor(self.document())
+            cur_left.setPosition(doc_pos - 1)
+            cur_left.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+            fmt = cur_left.charFormat()
+            if fmt.isImageFormat():
+                img_name = fmt.toImageFormat().name()
+                rect = self._image_view_rect(doc_pos - 1)
+                return img_name, doc_pos - 1, rect
+        # 遍历文档中所有图片，检查点击位置是否在其矩形内
+        block = self.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().isImageFormat():
+                    img_fmt = frag.charFormat().toImageFormat()
+                    frag_pos = frag.position()
+                    rect = self._image_view_rect(frag_pos)
+                    if rect and rect.contains(pos):
+                        return img_fmt.name(), frag_pos, rect
+                it += 1
+            block = block.next()
+        return None, -1, None
+
+    def _image_view_rect(self, doc_pos):
+        """根据文档中的图片位置计算其在视口中的实际矩形"""
+        if doc_pos < 0:
+            return None
+        # 获取图片格式
+        cur2 = QTextCursor(self.document())
+        cur2.setPosition(doc_pos)
+        cur2.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+        fmt = cur2.charFormat()
+        if not fmt.isImageFormat():
+            return None
+        img_fmt = fmt.toImageFormat()
+        # 图片宽高
+        w = int(img_fmt.width()) if img_fmt.width() > 0 else 0
+        h = int(img_fmt.height()) if img_fmt.height() > 0 else 0
+        if w <= 0 or h <= 0:
+            res = self.document().resource(QTextDocument.ImageResource, QUrl(img_fmt.name()))
+            if res is not None:
+                try:
+                    pix = QPixmap()
+                    if isinstance(res, QPixmap):
+                        pix = res
+                    elif isinstance(res, QImage):
+                        pix = QPixmap.fromImage(res)
+                    elif isinstance(res, (bytes, bytearray)):
+                        pix.loadFromData(bytes(res))
+                    if not pix.isNull():
+                        if w <= 0:
+                            w = pix.width()
+                        if h <= 0:
+                            h = pix.height()
+                except Exception:
+                    pass
+        if w <= 0 or h <= 0:
+            return None
+        # 使用 cursorRect 获取图片左上角位置
+        cur = QTextCursor(self.document())
+        cur.setPosition(doc_pos)
+        rect_start = self.cursorRect(cur)
+        return QRect(rect_start.topLeft(), QSize(w, h))
+
+    def _select_image_at_pos(self, doc_pos):
+        """根据文档位置选中图片"""
+        if doc_pos < 0:
+            self._clear_image_selection()
+            return False
+        cur = QTextCursor(self.document())
+        cur.setPosition(doc_pos)
+        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+        fmt = cur.charFormat()
+        if not fmt.isImageFormat():
+            self._clear_image_selection()
+            return False
+        self._selected_image_name = fmt.toImageFormat().name()
+        self._selected_image_pos = doc_pos
+        self._selected_image_rect = self._image_view_rect(doc_pos)
+        self.viewport().update()
+        return True
+
+    def _clear_image_selection(self):
+        self._selected_image_name = None
+        self._selected_image_pos = -1
+        self._selected_image_rect = None
+        self.viewport().update()
+
+    def _hit_resize_handle(self, pos):
+        """检查鼠标位置是否在调整大小手柄上，返回手柄类型或 None"""
+        if not self._selected_image_rect:
+            return None
+        hs = self._resize_handle_size
+        rect = self._selected_image_rect
+        # 8 个手柄（4角 + 4边中点）
+        handles = {
+            'top-left': QRect(rect.left() - hs, rect.top() - hs, hs * 2, hs * 2),
+            'top': QRect(rect.left() + rect.width() // 2 - hs, rect.top() - hs, hs * 2, hs * 2),
+            'top-right': QRect(rect.right() - hs, rect.top() - hs, hs * 2, hs * 2),
+            'right': QRect(rect.right() - hs, rect.top() + rect.height() // 2 - hs, hs * 2, hs * 2),
+            'bottom-right': QRect(rect.right() - hs, rect.bottom() - hs, hs * 2, hs * 2),
+            'bottom': QRect(rect.left() + rect.width() // 2 - hs, rect.bottom() - hs, hs * 2, hs * 2),
+            'bottom-left': QRect(rect.left() - hs, rect.bottom() - hs, hs * 2, hs * 2),
+            'left': QRect(rect.left() - hs, rect.top() + rect.height() // 2 - hs, hs * 2, hs * 2),
+        }
+        for name, hrect in handles.items():
+            if hrect.contains(pos):
+                return name
+        return None
+
+    def _cursor_for_handle(self, handle):
+        """根据手柄位置返回对应的光标样式"""
+        return {
+            'top-left': Qt.SizeFDiagCursor,
+            'bottom-right': Qt.SizeFDiagCursor,
+            'top-right': Qt.SizeBDiagCursor,
+            'bottom-left': Qt.SizeBDiagCursor,
+            'top': Qt.SizeVerCursor,
+            'bottom': Qt.SizeVerCursor,
+            'left': Qt.SizeHorCursor,
+            'right': Qt.SizeHorCursor,
+        }.get(handle, Qt.ArrowCursor)
+
     def mousePressEvent(self, event):
-        """检测图片点击，选中图片"""
-        cursor = self.cursorForPosition(event.pos())
-        cursor.movePosition(QTextCursor.Right)
-        char_fmt = cursor.charFormat()
-        if char_fmt.isImageFormat():
-            img_fmt = char_fmt.toImageFormat()
-            self._selected_image_format = img_fmt
-            self._selected_image_pos = event.pos()
-            self._image_dragging = True
-            self._drag_start_pos = event.pos()
-            # 设置鼠标样式
-            self.setCursor(Qt.ClosedHandCursor)
-            return
+        if event.button() == Qt.LeftButton:
+            # 优先检查是否点击在已选中图片的调整手柄上
+            if self._selected_image_rect:
+                handle = self._hit_resize_handle(event.pos())
+                if handle:
+                    self._resize_mode = handle
+                    self._resize_start_pos = event.pos()
+                    self._resize_start_rect = QRect(self._selected_image_rect)
+                    self.viewport().setCursor(self._cursor_for_handle(handle))
+                    event.accept()
+                    return
+                # 点击在选中图片内部 - 开始拖动
+                if self._selected_image_rect.contains(event.pos()):
+                    self._dragging_image = True
+                    self._drag_start_pos = event.pos()
+                    self.viewport().setCursor(Qt.ClosedHandCursor)
+                    event.accept()
+                    return
+            # 检查是否点击在某张图片上
+            img_name, doc_pos, rect = self._find_image_at(event.pos())
+            if img_name:
+                self._selected_image_name = img_name
+                self._selected_image_pos = doc_pos
+                self._selected_image_rect = rect
+                self.viewport().update()
+                # 显示 Office 风格工具栏
+                self._show_office_toolbar()
+                event.accept()
+                return
+            # 点击空白处清除选中
+            self._clear_image_selection()
+            self._hide_office_toolbar()
         super().mousePressEvent(event)
-        
+
     def mouseMoveEvent(self, event):
-        """拖动选中的图片"""
-        if self._image_dragging and self._selected_image_format and self._drag_start_pos:
-            delta = event.pos() - self._drag_start_pos
-            if delta.manhattanLength() > 5:
-                # 实际上在 QTextEdit 中直接拖动图片位置比较复杂
-                # 这里我们简化处理，显示拖动提示
-                pass
-            return
-        super().mouseMoveEvent(event)
-        
-    def mouseReleaseEvent(self, event):
-        """释放图片"""
-        if self._image_dragging:
-            self._image_dragging = False
-            self._selected_image_format = None
-            self.setCursor(Qt.IBeamCursor)
-            return
-        super().mouseReleaseEvent(event)
-        
-    def wheelEvent(self, event):
-        """滚轮缩放选中的图片"""
-        if self._selected_image_format:
-            delta = event.angleDelta().y()
-            if delta > 0:
-                self._image_scale = min(3.0, self._image_scale + self._scale_step)
-            else:
-                self._image_scale = max(0.5, self._image_scale - self._scale_step)
-            self._update_image_scale()
+        # 调整大小过程中
+        if self._resize_mode and self._resize_start_pos and self._resize_start_rect:
+            self._apply_resize(event.pos())
             event.accept()
             return
-        super().wheelEvent(event)
+        # 拖动图片过程中
+        if self._dragging_image and self._drag_start_pos:
+            delta = event.pos() - self._drag_start_pos
+            if delta.manhattanLength() > 4:
+                self._move_image_by_drag(event.pos())
+                self._drag_start_pos = event.pos()
+            event.accept()
+            return
+        # 鼠标悬停在选中图片的手柄上时切换光标
+        if self._selected_image_rect:
+            handle = self._hit_resize_handle(event.pos())
+            if handle:
+                self.viewport().setCursor(self._cursor_for_handle(handle))
+            else:
+                if self._selected_image_rect.contains(event.pos()):
+                    self.viewport().setCursor(Qt.OpenHandCursor)
+                else:
+                    self.viewport().setCursor(Qt.IBeamCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resize_mode:
+            # 提交尺寸修改到文档
+            if self._selected_image_pos >= 0 and self._selected_image_rect:
+                cur = QTextCursor(self.document())
+                cur.setPosition(self._selected_image_pos)
+                cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+                fmt = cur.charFormat()
+                if fmt.isImageFormat():
+                    img_fmt = fmt.toImageFormat()
+                    img_fmt.setWidth(self._selected_image_rect.width())
+                    img_fmt.setHeight(self._selected_image_rect.height())
+                    cur.setCharFormat(img_fmt)
+            self._resize_mode = None
+            self._resize_start_pos = None
+            self._resize_start_rect = None
+            # 重新计算选中矩形
+            if self._selected_image_pos >= 0:
+                self._selected_image_rect = self._image_view_rect(self._selected_image_pos)
+            # 同步工具栏尺寸
+            if self._office_toolbar and self._selected_image_rect:
+                self._office_toolbar.set_image_size(
+                    self._selected_image_rect.width(),
+                    self._selected_image_rect.height()
+                )
+            self.viewport().update()
+            event.accept()
+            return
+        if self._dragging_image:
+            self._dragging_image = False
+            self._drag_start_pos = None
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+    
+    def _move_image_by_drag(self, current_pos):
+        """通过拖动移动图片到光标位置（剪切+插入到新位置）"""
+        if self._selected_image_pos < 0 or not self._selected_image_name:
+            return
+        # 获取目标光标位置
+        target_cursor = self.cursorForPosition(current_pos)
+        target_pos = target_cursor.position()
+        # 不能拖到自己位置
+        if target_pos == self._selected_image_pos:
+            return
+        # 获取当前图片格式
+        cur = QTextCursor(self.document())
+        cur.setPosition(self._selected_image_pos)
+        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+        fmt = cur.charFormat()
+        if not fmt.isImageFormat():
+            return
+        img_fmt = fmt.toImageFormat()
+        # 删除原图片
+        cur.removeSelectedText()
+        # 调整目标位置（如果在原位置之后，需要减1）
+        if target_pos > self._selected_image_pos:
+            target_pos -= 1
+        # 插入图片到新位置
+        new_cur = QTextCursor(self.document())
+        new_cur.setPosition(target_pos)
+        new_cur.insertImage(img_fmt)
+        # 更新选中状态
+        self._selected_image_pos = target_pos
+        self._selected_image_rect = self._image_view_rect(target_pos)
+        self.viewport().update()
+    
+    def _show_office_toolbar(self):
+        """显示 Office 风格工具栏在图片上方"""
+        if not self._selected_image_rect:
+            return
+        if self._office_toolbar is None:
+            self._office_toolbar = _OfficeImageToolbar(self)
+            self._office_toolbar.toolbar_action.connect(self._on_toolbar_action)
+        # 同步当前图片尺寸
+        self._office_toolbar.set_image_size(
+            self._selected_image_rect.width(),
+            self._selected_image_rect.height()
+        )
+        # 计算工具栏位置（图片上方）
+        global_pos = self.viewport().mapToGlobal(
+            QPoint(self._selected_image_rect.left(), self._selected_image_rect.top())
+        )
+        toolbar_y = global_pos.y() - self._office_toolbar.height() - 4
+        if toolbar_y < 0:
+            toolbar_y = global_pos.y() + self._selected_image_rect.height() + 4
+        self._office_toolbar.move(global_pos.x(), toolbar_y)
+        self._office_toolbar.show()
+        self._office_toolbar.raise_()
+    
+    def _hide_office_toolbar(self):
+        """隐藏 Office 风格工具栏"""
+        if self._office_toolbar:
+            self._office_toolbar.hide()
+    
+    def _on_toolbar_action(self, action):
+        """处理工具栏操作"""
+        if self._selected_image_pos < 0:
+            return
+        if action == 'resize':
+            w, h = self._office_toolbar.get_image_size()
+            cur = QTextCursor(self.document())
+            cur.setPosition(self._selected_image_pos)
+            cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+            fmt = cur.charFormat()
+            if fmt.isImageFormat():
+                img_fmt = fmt.toImageFormat()
+                img_fmt.setWidth(w)
+                img_fmt.setHeight(h)
+                cur.setCharFormat(img_fmt)
+                self._selected_image_rect = self._image_view_rect(self._selected_image_pos)
+                self.viewport().update()
+        elif action == 'wrap':
+            mode = self._office_toolbar.get_wrap_mode()
+            self.set_image_wrap_mode(mode)
+
+    def _apply_resize(self, current_pos):
+        """根据鼠标拖动距离调整图片视觉矩形（不修改文档，释放时才提交）
         
-    def _update_image_scale(self):
-        """更新选中图片的缩放"""
-        if self._selected_image_format:
-            # 获取当前光标位置的图片并更新其大小
-            cursor = self.textCursor()
-            if cursor.hasSelection():
-                cursor.clearSelection()
-            # 查找图片并更新
-            img_name = self._selected_image_format.name()
-            # 在HTML中更新图片尺寸
-            html = self.toHtml()
-            # 简单的方式：重新插入缩放后的图片
-            cursor.insertHtml(
-                f'<img src="{img_name}" style="transform: scale({self._image_scale}); '
-                f'margin:8px 0; max-width:100%;">'
-            )
-            
+        手柄行为：
+        - 角点手柄：等比缩放
+        - 左/右中间手柄：仅横向缩放
+        - 上/下中间手柄：仅纵向缩放
+        """
+        if not self._resize_start_rect:
+            return
+        delta = current_pos - self._resize_start_pos
+        sr = self._resize_start_rect
+        new_w = sr.width()
+        new_h = sr.height()
+        ratio = sr.width() / max(1, sr.height())
+        min_size = 20
+
+        mode = self._resize_mode
+
+        # 横向缩放
+        if mode == 'right':
+            new_w = max(min_size, sr.width() + delta.x())
+        elif mode == 'left':
+            new_w = max(min_size, sr.width() - delta.x())
+        # 纵向缩放
+        elif mode == 'bottom':
+            new_h = max(min_size, sr.height() + delta.y())
+        elif mode == 'top':
+            new_h = max(min_size, sr.height() - delta.y())
+        # 角点等比缩放
+        elif mode in ('top-left', 'top-right', 'bottom-left', 'bottom-right'):
+            if mode in ('bottom-right', 'top-right'):
+                new_w = max(min_size, sr.width() + delta.x())
+            if mode in ('bottom-left', 'top-left'):
+                new_w = max(min_size, sr.width() - delta.x())
+            if mode in ('bottom', 'bottom-left', 'bottom-right'):
+                new_h = max(min_size, sr.height() + delta.y())
+            if mode in ('top', 'top-left', 'top-right'):
+                new_h = max(min_size, sr.height() - delta.y())
+            # 等比缩放：以较大的变化量为准
+            new_h = max(min_size, int(new_w / ratio))
+
+        # 只更新视觉矩形，不修改文档
+        self._selected_image_rect = QRect(sr.left(), sr.top(), new_w, new_h)
+        self.viewport().update()
+
+    def _delete_selected_image(self):
+        """删除选中的图片"""
+        if self._selected_image_pos < 0:
+            return
+        cur = QTextCursor(self.document())
+        cur.setPosition(self._selected_image_pos)
+        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+        cur.removeSelectedText()
+        self._clear_image_selection()
+
     def keyPressEvent(self, event):
-        """键盘快捷键：Delete删除选中图片，+-缩放"""
-        if self._selected_image_format:
-            if event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace:
-                # 删除选中的图片
-                cursor = self.textCursor()
-                cursor.deleteChar()
-                self._selected_image_format = None
-                event.accept()
-                return
-            elif event.key() == Qt.Key_Plus or event.key() == Qt.Key_Equal:
-                self._image_scale = min(3.0, self._image_scale + self._scale_step)
-                self._update_image_scale()
-                event.accept()
-                return
-            elif event.key() == Qt.Key_Minus:
-                self._image_scale = max(0.5, self._image_scale - self._scale_step)
-                self._update_image_scale()
-                event.accept()
-                return
+        # 选中图片后按 Delete/Backspace 删除
+        if self._selected_image_name and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._delete_selected_image()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
+    def wheelEvent(self, event):
+        """滚轮事件 - 不处理图片缩放，让滚动条正常工作"""
+        super().wheelEvent(event)
 
+    def _compress_image_if_needed(self, image_path):
+        """如果图像像素太大，自动压缩图像"""
+        max_pixels = 4096 * 4096
+        max_dimension = 4096
+        try:
+            from PIL import Image
+            img = Image.open(image_path)
+            width, height = img.size
+            total_pixels = width * height
+            if total_pixels > max_pixels or width > max_dimension or height > max_dimension:
+                scale = min(max_dimension / width, max_dimension / height, 1.0)
+                if scale < 1.0:
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    img = img.resize((new_width, new_height), Image.LANCZOS)
+                    img.save(image_path, quality=90)
+            return True
+        except Exception:
+            return False
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # 调整大小过程中不刷新选中矩形（使用_apply_resize设置的视觉矩形）
+        if not self._resize_mode:
+            if self._selected_image_pos >= 0:
+                new_rect = self._image_view_rect(self._selected_image_pos)
+                if new_rect is not None:
+                    self._selected_image_rect = new_rect
+        if not self._selected_image_rect:
+            return
+        rect = self._selected_image_rect
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 蓝色虚线边框
+        pen = QPen(QColor(63, 123, 247), 1, Qt.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect)
+        # 8 个手柄（4角 + 4边中点）
+        hs = self._resize_handle_size
+        painter.setPen(QPen(QColor(63, 123, 247), 1))
+        painter.setBrush(QColor(255, 255, 255))
+        cx = rect.left() + rect.width() // 2
+        cy = rect.top() + rect.height() // 2
+        for x, y in [
+            (rect.left(), rect.top()),       # top-left
+            (cx, rect.top()),                 # top
+            (rect.right(), rect.top()),       # top-right
+            (rect.right(), cy),               # right
+            (rect.right(), rect.bottom()),    # bottom-right
+            (cx, rect.bottom()),              # bottom
+            (rect.left(), rect.bottom()),     # bottom-left
+            (rect.left(), cy),                # left
+        ]:
+            painter.drawRect(x - hs // 2, y - hs // 2, hs, hs)
+        painter.end()
+    
 class _FormatBtn(QWidget):
     """富文本编辑器工具栏的图形化格式按钮"""
-    clicked = pyqtSignal()
+    clicked = pyqtSignal(bool)
 
     def __init__(self, fmt_id, fg_color='#c8c8cc', parent=None):
         super().__init__(parent)
@@ -3943,6 +5401,83 @@ class _FormatBtn(QWidget):
             painter.drawArc(cx - 6, cy - 6, 12, 12, 210 * 16, 240 * 16)
             pts = [QPoint(cx + 6, cy + 2), QPoint(cx + 6, cy + 6), QPoint(cx + 1, cy + 3)]
             painter.drawPolyline(QPolygon(pts))
+        elif fid == 'image_select':
+            # 选择工具 - 十字准星
+            painter.drawLine(cx - 6, cy, cx + 6, cy)
+            painter.drawLine(cx, cy - 6, cx, cy + 6)
+        elif fid == 'image_move':
+            # 移动工具 - 十字箭头
+            painter.drawLine(cx - 6, cy, cx + 6, cy)
+            painter.drawLine(cx, cy - 6, cx, cy + 6)
+            painter.drawLine(cx - 4, cy - 4, cx - 1, cy - 1)
+            painter.drawLine(cx + 4, cy - 4, cx + 1, cy - 1)
+            painter.drawLine(cx - 4, cy + 4, cx - 1, cy + 1)
+            painter.drawLine(cx + 4, cy + 4, cx + 1, cy + 1)
+        elif fid == 'image_resize':
+            # 缩放工具 - 对角箭头
+            painter.drawLine(cx - 6, cy - 6, cx + 6, cy + 6)
+            painter.drawLine(cx + 6, cy - 6, cx - 6, cy + 6)
+            painter.drawLine(cx + 4, cy - 6, cx + 6, cy - 4)
+            painter.drawLine(cx - 6, cy + 4, cx - 4, cy + 6)
+        elif fid == 'image_rotate':
+            # 旋转工具 - 弧形箭头
+            painter.drawArc(cx - 6, cy - 6, 12, 12, 0, 270 * 16)
+            painter.drawLine(cx - 6, cy, cx - 9, cy - 3)
+            painter.drawLine(cx, cy - 6, cx + 3, cy - 9)
+        elif fid == 'image_crop':
+            # 裁剪工具 - 方形裁剪框
+            painter.drawRect(cx - 6, cy - 6, 12, 12)
+            painter.drawLine(cx - 2, cy - 6, cx - 2, cy - 2)
+            painter.drawLine(cx + 2, cy - 6, cx + 2, cy - 2)
+            painter.drawLine(cx - 6, cy - 2, cx - 2, cy - 2)
+            painter.drawLine(cx + 2, cy - 2, cx + 6, cy - 2)
+        elif fid == 'image_delete':
+            # 删除工具 - 垃圾桶
+            painter.drawRect(cx - 5, cy - 3, 10, 8)
+            painter.drawRect(cx - 3, cy + 5, 6, 4)
+            painter.drawLine(cx - 4, cy - 3, cx - 4, cy + 3)
+            painter.drawLine(cx + 4, cy - 3, cx + 4, cy + 3)
+        elif fid == 'image_caption':
+            # 图片标题 - 图片下方加文字
+            # 图片框
+            painter.drawRect(cx - 6, cy - 5, 12, 8)
+            # 下方文字线
+            painter.drawLine(cx - 5, cy + 4, cx + 5, cy + 4)
+            painter.drawLine(cx - 4, cy + 7, cx + 4, cy + 7)
+        elif fid == 'arrow':
+            # 箭头工具
+            painter.setPen(QPen(fg, 1.5))
+            painter.drawLine(cx - 6, cy + 6, cx + 4, cy - 4)
+            pts = [QPoint(cx + 4, cy - 4), QPoint(cx + 1, cy - 1), QPoint(cx + 2, cy + 1)]
+            painter.setBrush(fg)
+            painter.drawPolygon(QPolygon(pts))
+            painter.setBrush(Qt.NoBrush)
+        elif fid == 'rect':
+            # 矩形标注工具
+            painter.setPen(QPen(fg, 1.5))
+            painter.drawRect(cx - 7, cy - 5, 14, 10)
+        elif fid == 'circle':
+            # 圆形标注工具
+            painter.setPen(QPen(fg, 1.5))
+            painter.drawEllipse(cx - 6, cy - 6, 12, 12)
+        elif fid == 'line':
+            # 直线工具
+            painter.setPen(QPen(fg, 1.5))
+            painter.drawLine(cx - 7, cy + 5, cx + 7, cy - 5)
+        elif fid == 'text':
+            # 文字标注工具
+            painter.setFont(QFont("SimSun", 12, QFont.Bold))
+            painter.setPen(QPen(fg, 1))
+            painter.drawText(r.adjusted(0, 0, 0, -4), Qt.AlignCenter, 'T')
+            painter.setPen(QPen(fg, 1))
+            painter.drawLine(cx, cy + 3, cx, cy + 7)
+        elif fid == 'insert_textbox':
+            # 文本框工具 - 方框内带T字
+            painter.setPen(QPen(fg, 1.5))
+            painter.drawRect(cx - 7, cy - 6, 14, 12)
+            painter.setFont(QFont("SimSun", 8, QFont.Bold))
+            painter.setPen(QPen(fg, 1))
+            painter.drawText(r, Qt.AlignCenter, 'T')
         painter.end()
 
     def enterEvent(self, event):
@@ -3955,7 +5490,7 @@ class _FormatBtn(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit()
+            self.clicked.emit(True)
 
 
 class _InlineFormatBar(QWidget):
@@ -4032,12 +5567,12 @@ class _InlineFormatBar(QWidget):
         # 颜色
         btn_tc = _FormatBtn('text_color', fg_color='#d0d0d4')
         btn_tc.setToolTip('文字颜色')
-        btn_tc.clicked.connect(lambda: self.format_action.emit('text_color'))
+        btn_tc.clicked.connect(lambda checked: self.format_action.emit('text_color'))
         layout.addWidget(btn_tc)
 
         btn_bg = _FormatBtn('bg_color', fg_color='#d0d0d4')
         btn_bg.setToolTip('背景颜色')
-        btn_bg.clicked.connect(lambda: self.format_action.emit('bg_color'))
+        btn_bg.clicked.connect(lambda checked: self.format_action.emit('bg_color'))
         layout.addWidget(btn_bg)
 
         self._add_sep(layout)
@@ -4054,7 +5589,7 @@ class _InlineFormatBar(QWidget):
         # 代码格式化
         btn_code = _FormatBtn('code', fg_color='#d0d0d4')
         btn_code.setToolTip('行内代码')
-        btn_code.clicked.connect(lambda: self.format_action.emit('code'))
+        btn_code.clicked.connect(lambda checked: self.format_action.emit('code'))
         layout.addWidget(btn_code)
 
         self._add_sep(layout)
@@ -4062,7 +5597,7 @@ class _InlineFormatBar(QWidget):
         # 链接
         btn_link = _FormatBtn('insert_link', fg_color='#d0d0d4')
         btn_link.setToolTip('插入链接')
-        btn_link.clicked.connect(lambda: self.format_action.emit('insert_link'))
+        btn_link.clicked.connect(lambda checked: self.format_action.emit('insert_link'))
         layout.addWidget(btn_link)
 
         self._add_sep(layout)
@@ -4314,7 +5849,7 @@ class _ImageEditPopup(QWidget):
         if self._image_path:
             self.annotate_image.emit(self._image_path, tool_id)
 
-    def _on_open_editor(self):
+    def _on_open_editor(self, checked=False):
         if self._image_path:
             self.edit_image.emit(self._image_path)
 
@@ -4375,7 +5910,17 @@ class _RichTextEditorDialog(QDialog):
 
         # 笔记列表
         self.note_list = QListWidget()
+        self.note_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.note_list.customContextMenuRequested.connect(self._show_note_context_menu)
         self.note_list.currentRowChanged.connect(self._on_note_selected)
+        # 设置样式支持层级缩进
+        self.note_list.setStyleSheet("""
+            QListWidget { border: none; background: #1e1e22; outline: none; }
+            QListWidget::item { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,8);
+                                color: #a0a0a8; font-size: 12px; }
+            QListWidget::item:selected { background-color: rgba(63,123,247,30); color: #e0e0e4; }
+            QListWidget::item:hover { background-color: rgba(255,255,255,8); color: #c8c8cc; }
+        """)
         left_layout.addWidget(self.note_list)
 
         # 删除按钮
@@ -4556,6 +6101,7 @@ class _RichTextEditorDialog(QDialog):
         # 插入按钮
         insert_buttons = [
             ('insert_image', '插入图片', self._insert_image),
+            ('image_caption', '图片标题', self._add_image_caption),
             ('insert_link', '插入链接', self._insert_link),
             ('insert_table', '插入表格', self._insert_table),
             ('insert_hr', '插入分隔线', self._insert_hr),
@@ -4591,58 +6137,66 @@ class _RichTextEditorDialog(QDialog):
         fmt.setFontWeight(weights[idx])
         self.text_edit.setCurrentCharFormat(fmt)
 
-    def _toggle_bold(self):
+    def _toggle_bold(self, checked=False):
         self.text_edit.setFontWeight(
             QFont.Normal if self.text_edit.fontWeight() == QFont.Bold else QFont.Bold
         )
 
-    def _toggle_italic(self):
+    def _toggle_italic(self, checked=False):
         self.text_edit.setFontItalic(not self.text_edit.fontItalic())
 
-    def _toggle_underline(self):
+    def _toggle_underline(self, checked=False):
         self.text_edit.setFontUnderline(not self.text_edit.fontUnderline())
 
-    def _toggle_strikethrough(self):
+    def _toggle_strikethrough(self, checked=False):
         fmt = self.text_edit.currentCharFormat()
         fmt.setFontStrikeOut(not fmt.fontStrikeOut())
         self.text_edit.setCurrentCharFormat(fmt)
 
-    def _toggle_bullet_list(self):
+    def _toggle_bullet_list(self, checked=False):
         self.text_edit.insertList(QTextListFormat.ListDisc)
 
-    def _toggle_ordered_list(self):
+    def _toggle_ordered_list(self, checked=False):
         self.text_edit.insertList(QTextListFormat.ListDecimal)
 
-    def _toggle_todo_list(self):
+    def _toggle_todo_list(self, checked=False):
         cursor = self.text_edit.textCursor()
         cursor.insertList(QTextListFormat.ListDisc)
         cursor.insertText('☐ ')
 
-    def _align_left(self):
+    def _align_left(self, checked=False):
         self.text_edit.setAlignment(Qt.AlignLeft)
 
-    def _align_center(self):
+    def _align_center(self, checked=False):
         self.text_edit.setAlignment(Qt.AlignCenter)
 
-    def _align_right(self):
+    def _align_right(self, checked=False):
         self.text_edit.setAlignment(Qt.AlignRight)
 
     def _show_edit_context_menu(self, pos):
-        """显示编辑器右键菜单"""
+        """显示编辑器右键菜单（支持粘贴图片和表格）"""
         from PyQt5.QtWidgets import QMenu
+        from PyQt5.QtGui import QClipboard
+        
         menu = QMenu(self)
         menu.setStyleSheet("QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; }"
                           "QMenu::item:selected { background-color: #3f7bf7; }")
+        
         act_undo = menu.addAction('撤销')
         act_redo = menu.addAction('重做')
         menu.addSeparator()
         act_cut = menu.addAction('剪切')
         act_copy = menu.addAction('复制')
         act_paste = menu.addAction('粘贴')
+        act_paste_image = menu.addAction('粘贴图片')
+        act_paste_table = menu.addAction('粘贴表格')
         menu.addSeparator()
         act_select_all = menu.addAction('全选')
 
         action = menu.exec_(self.text_edit.viewport().mapToGlobal(pos))
+        
+        clipboard = QApplication.clipboard()
+        
         if action == act_undo:
             self.text_edit.undo()
         elif action == act_redo:
@@ -4653,22 +6207,91 @@ class _RichTextEditorDialog(QDialog):
             self.text_edit.copy()
         elif action == act_paste:
             self.text_edit.paste()
+        elif action == act_paste_image:
+            self._paste_image_from_clipboard()
+        elif action == act_paste_table:
+            self._paste_table_from_clipboard()
         elif action == act_select_all:
             self.text_edit.selectAll()
 
-    def _set_text_color(self):
+    def _paste_image_from_clipboard(self):
+        """从剪贴板粘贴图片"""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        if mime_data.hasImage():
+            pixmap = clipboard.pixmap()
+            if not pixmap.isNull():
+                # 保存图片到临时文件
+                import uuid
+                img_dir = os.path.join(APP_DIR, 'images')
+                os.makedirs(img_dir, exist_ok=True)
+                filename = str(uuid.uuid4())[:8] + '.png'
+                dest = os.path.join(img_dir, filename)
+                pixmap.save(dest)
+                
+                # 压缩图片
+                self._compress_image_if_needed(dest)
+                
+                # 插入到编辑器
+                self.text_edit.insertHtml(f'<img src="{dest}" style="max-width:100%; margin:8px 0;">')
+                
+    def _paste_table_from_clipboard(self):
+        """从剪贴板粘贴表格（从Excel等复制）"""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        if mime_data.hasText():
+            text = mime_data.text()
+            # 尝试解析表格数据（Tab分隔行，换行分隔列）
+            rows = text.strip().split('\n')
+            if len(rows) > 0:
+                # 构建HTML表格
+                html = '<table border="1" style="border-collapse:collapse; margin:8px 0;">'
+                for row in rows:
+                    cells = row.split('\t')
+                    html += '<tr>'
+                    for cell in cells:
+                        html += f'<td style="padding:4px 8px; border:1px solid #444;">{cell}</td>'
+                    html += '</tr>'
+                html += '</table>'
+                self.text_edit.insertHtml(html)
+    
+    def _compress_image_if_needed(self, image_path):
+        """如果图像像素太大，自动压缩图像"""
+        max_pixels = 4096 * 4096
+        max_dimension = 4096
+        
+        try:
+            from PIL import Image
+            img = Image.open(image_path)
+            width, height = img.size
+            
+            total_pixels = width * height
+            if total_pixels > max_pixels or width > max_dimension or height > max_dimension:
+                scale = min(max_dimension / width, max_dimension / height, 1.0)
+                if scale < 1.0:
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    img = img.resize((new_width, new_height), Image.LANCZOS)
+                    img.save(image_path, quality=90)
+            return True
+        except Exception as e:
+            return False
+
+    def _set_text_color(self, checked=False):
         from PyQt5.QtWidgets import QColorDialog
         color = QColorDialog.getColor(Qt.black, self, '选择文字颜色')
         if color.isValid():
             self.text_edit.setTextColor(color)
 
-    def _set_bg_color(self):
+    def _set_bg_color(self, checked=False):
         from PyQt5.QtWidgets import QColorDialog
         color = QColorDialog.getColor(Qt.white, self, '选择背景颜色')
         if color.isValid():
             self.text_edit.setTextBackgroundColor(color)
 
-    def _insert_image(self):
+    def _insert_image(self, checked=False):
         file_paths, _ = QFileDialog.getOpenFileNames(
             self, '选择图片', '', '图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)'
         )
@@ -4703,13 +6326,13 @@ class _RichTextEditorDialog(QDialog):
                 f'<img src="{dest}" style="max-width:100%; margin:8px 0;">'
             )
 
-    def _insert_link(self):
+    def _insert_link(self, checked=False):
         from PyQt5.QtWidgets import QInputDialog
         url, ok = QInputDialog.getText(self, '插入链接', 'URL:')
         if ok and url:
             self.text_edit.insertHtml(f'<a href="{url}" style="color:#3f7bf7;">{url}</a>')
 
-    def _insert_table(self):
+    def _insert_table(self, checked=False):
         self.text_edit.insertHtml(
             '<table border="1" style="border-collapse:collapse; width:100%; margin:8px 0;">'
             '<tr><td style="padding:6px; border:1px solid #444;">&nbsp;</td>'
@@ -4719,10 +6342,62 @@ class _RichTextEditorDialog(QDialog):
             '</table>'
         )
 
-    def _insert_hr(self):
+    def _insert_hr(self, checked=False):
         self.text_edit.insertHtml('<hr style="border:1px solid #444; margin:8px 0;">')
 
-    def _insert_code_block(self):
+    def _add_image_caption(self, checked=False):
+        """为图片添加标题和注释（类似Trilium Notes）"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLineEdit, QTextEdit, QLabel, QPushButton, QHBoxLayout
+        
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle('图片标题')
+        dialog.setFixedSize(400, 250)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        
+        # 标题输入
+        layout.addWidget(QLabel('图片标题：'))
+        title_input = QLineEdit()
+        title_input.setPlaceholderText('输入图片标题...')
+        layout.addWidget(title_input)
+        
+        # 注释输入
+        layout.addWidget(QLabel('注释说明：'))
+        caption_input = QTextEdit()
+        caption_input.setPlaceholderText('输入图片注释（可选）...')
+        caption_input.setFixedHeight(80)
+        layout.addWidget(caption_input)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton('确定')
+        btn_ok.setObjectName('accentBtn')
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel = QPushButton('取消')
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            title = title_input.text().strip()
+            caption = caption_input.toPlainText().strip()
+            
+            if title or caption:
+                # 创建图片标题HTML结构
+                html = '<div style="margin:8px 0; text-align:center;">'
+                if title:
+                    html += f'<div style="font-size:12px; color:#888; font-style:italic; margin-top:4px;">{title}</div>'
+                if caption:
+                    html += f'<div style="font-size:11px; color:#666; margin-top:2px; text-align:left; padding:4px 8px; background:rgba(0,0,0,20); border-radius:3px;">{caption}</div>'
+                html += '</div>'
+                
+                self.text_edit.insertHtml(html)
+
+    def _insert_code_block(self, checked=False):
         self.text_edit.insertHtml(
             '<pre style="background:#1a1a1e; color:#c8c8cc; padding:12px; '
             'border-radius:4px; font-family:Consolas,monospace; font-size:13px; '
@@ -4731,21 +6406,36 @@ class _RichTextEditorDialog(QDialog):
 
     # ── 笔记管理 ──
     def _load_note_list(self):
-        """加载笔记列表"""
+        """加载笔记列表（支持层级显示）"""
         self.note_list.clear()
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
+        
         if self.record_type == 'medical':
-            c.execute("SELECT id, title FROM medical_records WHERE disease_id=? ORDER BY id DESC",
+            c.execute("SELECT id, parent_id, title FROM medical_records WHERE disease_id=? ORDER BY parent_id, id",
                       (self.disease_id,))
         else:
-            c.execute("SELECT id, title FROM anatomy_records ORDER BY id DESC")
+            c.execute("SELECT id, parent_id, title FROM anatomy_records ORDER BY parent_id, id")
+        
         rows = c.fetchall()
         conn.close()
-        for rid, title in rows:
-            item = QListWidgetItem(title or '无标题')
-            item.setData(Qt.UserRole, rid)
-            self.note_list.addItem(item)
+        
+        # 构建层级结构
+        def build_tree(items, parent_id, level=0):
+            for rid, pid, title in items:
+                if pid == parent_id:
+                    indent = '    ' * level
+                    display_title = f'{indent}▶ {title}' if level > 0 else title
+                    item = QListWidgetItem(display_title or '无标题')
+                    item.setData(Qt.UserRole, rid)
+                    item.setData(Qt.UserRole + 1, pid)  # 存储父ID
+                    item.setData(Qt.UserRole + 2, level)  # 存储层级
+                    self.note_list.addItem(item)
+                    # 递归添加子笔记
+                    build_tree(items, rid, level + 1)
+        
+        build_tree(rows, 0, 0)
+        
         # 自动选中第一个
         if self.note_list.count() > 0:
             self.note_list.setCurrentRow(0)
@@ -4782,16 +6472,20 @@ class _RichTextEditorDialog(QDialog):
             self.save_indicator.setText('已保存')
             self.save_indicator.setStyleSheet("color: #4ade80; font-size: 11px; background: transparent;")
 
-    def _new_record(self):
-        """新建笔记"""
+    def _new_record(self, checked=False):
+        """新建笔记（顶级）"""
+        self._create_child_record(0)
+
+    def _create_child_record(self, parent_id):
+        """创建子笔记"""
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         if self.record_type == 'medical':
-            c.execute("INSERT INTO medical_records (disease_id, title, content) VALUES (?, ?, ?)",
-                      (self.disease_id, '新建笔记', ''))
+            c.execute("INSERT INTO medical_records (disease_id, parent_id, title, content) VALUES (?, ?, ?, ?)",
+                      (self.disease_id, parent_id, '新建笔记', ''))
         else:
-            c.execute("INSERT INTO anatomy_records (title, content) VALUES (?, ?)",
-                      ('新建笔记', ''))
+            c.execute("INSERT INTO anatomy_records (parent_id, title, content) VALUES (?, ?, ?)",
+                      (parent_id, '新建笔记', ''))
         conn.commit()
         new_id = c.lastrowid
         conn.close()
@@ -4809,7 +6503,76 @@ class _RichTextEditorDialog(QDialog):
         self.title_input.setFocus()
         self.title_input.selectAll()
 
-    def _delete_current_record(self):
+    def _show_note_context_menu(self, pos):
+        """显示笔记列表右键菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; padding: 4px; }
+            QMenu::item { padding: 6px 24px; border-radius: 4px; }
+            QMenu::item:selected { background-color: #3f7bf7; }
+        """)
+        
+        item = self.note_list.itemAt(pos)
+        if item:
+            # 添加子笔记
+            act_add_child = menu.addAction('添加子笔记')
+            menu.addSeparator()
+            # 删除笔记
+            act_delete = menu.addAction('删除笔记')
+            menu.addSeparator()
+            # 重命名
+            act_rename = menu.addAction('重命名')
+            
+            action = menu.exec_(self.note_list.mapToGlobal(pos))
+            if action == act_add_child:
+                parent_id = item.data(Qt.UserRole)
+                self._create_child_record(parent_id)
+            elif action == act_delete:
+                self._delete_record(item.data(Qt.UserRole))
+            elif action == act_rename:
+                self._rename_record(item)
+    
+    def _delete_record(self, record_id):
+        """删除笔记及其所有子笔记"""
+        reply = QMessageBox.question(self, '确认删除', '确定要删除这条笔记及其所有子笔记吗？',
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
+            
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        
+        # 删除子笔记（递归删除）
+        if self.record_type == 'medical':
+            c.execute("DELETE FROM medical_records WHERE id=? OR parent_id=?", (record_id, record_id))
+        else:
+            c.execute("DELETE FROM anatomy_records WHERE id=? OR parent_id=?", (record_id, record_id))
+        
+        conn.commit()
+        conn.close()
+        self._load_note_list()
+        self.title_input.setText('')
+        self.text_edit.setHtml('')
+        self._current_record_id = None
+
+    def _rename_record(self, item):
+        """重命名笔记"""
+        from PyQt5.QtWidgets import QInputDialog
+        current_title = item.text()
+        new_title, ok = QInputDialog.getText(self, '重命名', '输入新标题:', text=current_title)
+        if ok and new_title.strip():
+            record_id = item.data(Qt.UserRole)
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self.record_type == 'medical':
+                c.execute("UPDATE medical_records SET title=? WHERE id=?", (new_title.strip(), record_id))
+            else:
+                c.execute("UPDATE anatomy_records SET title=? WHERE id=?", (new_title.strip(), record_id))
+            conn.commit()
+            conn.close()
+            item.setText(new_title.strip())
+
+    def _delete_current_record(self, checked=False):
         """删除当前笔记"""
         if self._current_record_id is None:
             return
@@ -4863,7 +6626,7 @@ class _RichTextEditorDialog(QDialog):
             self.save_indicator.setText(f'保存失败: {e}')
             self.save_indicator.setStyleSheet("color: #e64a3a; font-size: 11px; background: transparent;")
 
-    def _manual_save(self):
+    def _manual_save(self, checked=False):
         """手动保存"""
         self._save_timer.stop()
         self._auto_save()
@@ -4977,15 +6740,17 @@ class DetailPanel(QWidget):
             QPushButton { background: transparent; border: none; color: #666670; border-radius: 3px; }
             QPushButton:hover { background: rgba(255,255,255,15); color: #c8c8cc; }
         """)
-        self.record_menu_btn.clicked.connect(self._show_record_menu)
+        self.record_menu_btn.clicked.connect(lambda checked: self._show_record_menu())
         header_hl.addWidget(self.record_menu_btn)
         record_list_layout.addWidget(record_list_header)
         self.record_list = QListWidget()
         self.record_list.currentRowChanged.connect(self._on_record_list_clicked)
         self.record_list.itemDoubleClicked.connect(self._on_record_list_double_clicked)
+        self.record_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.record_list.customContextMenuRequested.connect(self._show_record_item_menu)
         self.record_list.setStyleSheet("""
             QListWidget { border: none; background: transparent; outline: none; }
-            QListWidget::item { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,8);
+            QListWidget::item { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,8);
                                 color: #a0a0a8; font-size: 12px; }
             QListWidget::item:selected { background-color: rgba(63,123,247,30); color: #e0e0e4; }
             QListWidget::item:hover { background-color: rgba(255,255,255,8); color: #c8c8cc; }
@@ -5008,19 +6773,18 @@ class DetailPanel(QWidget):
         """)
         self.record_stack.addWidget(self.record_content_browser)
 
-        # Page 1: 编辑模式 - 标题输入 + 工具面板 + 编辑器（工具固定在侧方）
+        # Page 1: 编辑模式 - 标题输入 + 工具面板 + 编辑器（工具固定在上方）
         edit_widget = QWidget()
-        edit_layout = QHBoxLayout(edit_widget)
+        edit_layout = QVBoxLayout(edit_widget)
         edit_layout.setContentsMargins(0, 0, 0, 0)
         edit_layout.setSpacing(0)
 
-        # 左侧工具面板（固定显示）
+        # 顶部工具面板（常驻显示）
         self._tool_panel = QWidget()
-        self._tool_panel.setFixedWidth(40)
         self._tool_panel.setStyleSheet("background: #222226;")
-        tool_panel_layout = QVBoxLayout(self._tool_panel)
-        tool_panel_layout.setContentsMargins(4, 8, 4, 8)
-        tool_panel_layout.setSpacing(4)
+        tool_panel_layout = QHBoxLayout(self._tool_panel)
+        tool_panel_layout.setContentsMargins(8, 4, 8, 4)
+        tool_panel_layout.setSpacing(2)
 
         # 格式工具
         format_tools = [
@@ -5033,7 +6797,7 @@ class DetailPanel(QWidget):
             btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
             tool_panel_layout.addWidget(btn)
 
-        tool_panel_layout.addStretch()
+        self._add_tool_sep(tool_panel_layout)
 
         # 对齐工具
         align_tools = [
@@ -5045,7 +6809,7 @@ class DetailPanel(QWidget):
             btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
             tool_panel_layout.addWidget(btn)
 
-        tool_panel_layout.addStretch()
+        self._add_tool_sep(tool_panel_layout)
 
         # 列表工具
         list_tools = [
@@ -5057,12 +6821,13 @@ class DetailPanel(QWidget):
             btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
             tool_panel_layout.addWidget(btn)
 
-        tool_panel_layout.addStretch()
+        self._add_tool_sep(tool_panel_layout)
 
         # 插入工具
         insert_tools = [
             ('insert_image', '插入图片'), ('insert_table', '插入表格'),
             ('insert_hr', '分隔线'), ('insert_link', '插入链接'),
+            ('insert_sticker', '插入贴图'),
         ]
         for fmt_id, tip in insert_tools:
             btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
@@ -5070,7 +6835,7 @@ class DetailPanel(QWidget):
             btn.clicked.connect(lambda checked, fid=fmt_id: self._on_block_action(fid))
             tool_panel_layout.addWidget(btn)
 
-        tool_panel_layout.addStretch()
+        self._add_tool_sep(tool_panel_layout)
 
         # 撤销/重做
         undo_redo_tools = [('undo', '撤销'), ('redo', '重做')]
@@ -5080,15 +6845,72 @@ class DetailPanel(QWidget):
             btn.clicked.connect(lambda checked, fid=fmt_id: self._on_format_action(fid))
             tool_panel_layout.addWidget(btn)
 
-        edit_layout.addWidget(self._tool_panel)
+        self._add_tool_sep(tool_panel_layout)
 
-        # 分隔线
+        # 图像编辑工具
+        tool_panel_layout.addWidget(QLabel('图像:'))
+        image_tools = [
+            ('image_select', '选择'), ('image_delete', '删除'),
+        ]
+        for fmt_id, tip in image_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_image_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        self._add_tool_sep(tool_panel_layout)
+        
+        # 文本框和标注工具
+        tool_panel_layout.addWidget(QLabel('标注:'))
+        annotation_tools = [
+            ('insert_textbox', '文本框'), ('arrow', '箭头'), ('rect', '矩形'), 
+            ('circle', '圆形'), ('line', '直线'), ('text', '文字'),
+        ]
+        for fmt_id, tip in annotation_tools:
+            btn = _FormatBtn(fmt_id, fg_color='#c8c8cc')
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda checked, fid=fmt_id: self._on_annotation_action(fid))
+            tool_panel_layout.addWidget(btn)
+
+        self._add_tool_sep(tool_panel_layout)
+
+        # 图片环绕方式
+        tool_panel_layout.addWidget(QLabel('环绕:'))
+        self._wrap_combo = QComboBox()
+        self._wrap_combo.addItems(['嵌入型', '四周环绕', '紧密环绕', '穿越环绕', '上下型', '衬于下方', '浮于上方'])
+        self._wrap_combo.setFixedWidth(100)
+        self._wrap_combo.setStyleSheet("""
+            QComboBox { background: rgba(255,255,255,10); color: #c8c8cc; border: 1px solid #444; border-radius: 3px; font-size: 12px; }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView { background: #2a2a30; color: #c8c8cc; }
+        """)
+        self._wrap_combo.currentIndexChanged.connect(self._on_wrap_changed)
+        tool_panel_layout.addWidget(self._wrap_combo)
+
+        tool_panel_layout.addStretch()
+
+        # 将工具面板放入水平滚动区域
+        tool_scroll = QScrollArea()
+        tool_scroll.setWidget(self._tool_panel)
+        tool_scroll.setWidgetResizable(False)
+        tool_scroll.setFixedHeight(56)
+        tool_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        tool_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tool_scroll.setStyleSheet("""
+            QScrollArea { border: none; background: #222226; }
+            QScrollBar:horizontal { height: 6px; background: #222226; }
+            QScrollBar::handle:horizontal { background: #555; border-radius: 3px; min-width: 30px; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+        """)
+        edit_layout.addWidget(tool_scroll)
+
+        # 工具面板分隔线
         tool_sep = QFrame()
-        tool_sep.setFrameShape(QFrame.VLine)
-        tool_sep.setStyleSheet("background-color: #2a2a30; width: 1px;")
+        tool_sep.setFrameShape(QFrame.HLine)
+        tool_sep.setStyleSheet("background-color: #2a2a30;")
         edit_layout.addWidget(tool_sep)
 
-        # 右侧编辑区域
+        # 编辑区域内容
         edit_content = QWidget()
         edit_content_layout = QVBoxLayout(edit_content)
         edit_content_layout.setContentsMargins(0, 0, 0, 0)
@@ -5135,8 +6957,8 @@ class DetailPanel(QWidget):
         title_sep.setStyleSheet("background-color: #2a2a30; max-height: 1px;")
         edit_content_layout.addWidget(title_sep)
 
-        # 内嵌富文本编辑器（支持图片选中、缩放和拖动）
-        self.inline_text_edit = _ImageEditableTextEdit()
+        # 内嵌富文本编辑器（支持图片选中、缩放、拖动、调整尺寸）
+        self.inline_text_edit = _ImageEditableTextEdit(self)
         self.inline_text_edit.setAcceptRichText(True)
         self.inline_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         self.inline_text_edit.customContextMenuRequested.connect(self._show_inline_context_menu)
@@ -5152,6 +6974,7 @@ class DetailPanel(QWidget):
         self.record_splitter.addWidget(self.record_stack)
         self.record_splitter.setStretchFactor(0, 0)
         self.record_splitter.setStretchFactor(1, 1)
+        self.record_splitter.setSizes([160, 500])
         self.record_splitter.hide()
         layout.addWidget(self.record_splitter, stretch=1)
 
@@ -5171,13 +6994,68 @@ class DetailPanel(QWidget):
 
         # 连接编辑器信号
         self.inline_text_edit.textChanged.connect(self._on_edit_text_changed)
-        # 安装事件过滤器以检测图片点击
+
+        # 安装事件过滤器以检测图片点击 + 标签拖动脱离
         self.inline_text_edit.viewport().installEventFilter(self)
-        # 安装事件过滤器以支持标签拖动脱离
         for btn in self.tab_buttons:
             btn.installEventFilter(self)
 
-    def _show_record_menu(self):
+    def _add_tool_sep(self, layout):
+        """添加工具面板分隔线"""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet("background-color: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+        layout.addSpacing(4)
+
+    def _on_image_action(self, action_id):
+        """处理图像编辑工具的动作"""
+        self.inline_text_edit.set_image_tool(action_id)
+
+    def _on_annotation_action(self, action_id):
+        """处理标注工具的动作（文本框、箭头、矩形等）"""
+        if action_id == 'insert_textbox':
+            self._insert_textbox()
+        elif action_id in ('arrow', 'rect', 'circle', 'line', 'text'):
+            # 在当前选中的图片上启动标注模式
+            self._start_image_annotation(action_id)
+    
+    def _insert_textbox(self):
+        """在编辑器中插入可拖拽文本框"""
+        if not hasattr(self, '_textboxes'):
+            self._textboxes = []
+        textbox = _DraggableTextBox(self.inline_text_edit.viewport())
+        # 默认位置：编辑器中心
+        editor_rect = self.inline_text_edit.viewport().rect()
+        textbox.resize(200, 100)
+        textbox.move(
+            editor_rect.width() // 2 - 100,
+            editor_rect.height() // 2 - 50
+        )
+        textbox.removed.connect(lambda: self._textboxes.remove(textbox) if textbox in self._textboxes else None)
+        textbox.show()
+        textbox.raise_()
+        self._textboxes.append(textbox)
+    
+    def _start_image_annotation(self, tool_id):
+        """在选中图片上启动标注模式：打开完整图片编辑器"""
+        edit = self.inline_text_edit
+        if not edit._selected_image_name:
+            QMessageBox.information(self, '提示', '请先选中要标注的图片')
+            return
+        # 通过完整图片编辑器进行标注
+        img_path = edit._selected_image_name
+        if hasattr(self, '_image_edit_popup'):
+            self._image_edit_popup.annotate_image.emit(img_path, tool_id)
+
+    def _on_wrap_changed(self, idx):
+        """处理图片环绕方式变化"""
+        wrap_modes = ['inline', 'square', 'tight', 'through', 'topAndBottom', 'behind', 'front']
+        if idx < len(wrap_modes):
+            self.inline_text_edit.set_image_wrap_mode(wrap_modes[idx])
+
+    def _show_record_menu(self, checked=False):
         """显示笔记列表操作菜单"""
         menu = QMenu(self)
         menu.setStyleSheet("""
@@ -5185,7 +7063,8 @@ class DetailPanel(QWidget):
             QMenu::item { padding: 6px 24px; border-radius: 4px; }
             QMenu::item:selected { background-color: #3f7bf7; }
         """)
-        act_add = menu.addAction('添加笔记')
+        act_add = menu.addAction('+ 添加笔记')
+        act_add_child = menu.addAction('+ 添加子笔记')
         act_edit = menu.addAction('编辑选中')
         menu.addSeparator()
         act_delete = menu.addAction('删除选中')
@@ -5193,6 +7072,13 @@ class DetailPanel(QWidget):
             QPoint(self.record_menu_btn.width(), 0)))
         if action == act_add:
             self._add_record()
+        elif action == act_add_child:
+            current = self.record_list.currentItem()
+            if current:
+                parent_id = current.data(Qt.UserRole)
+                self._add_record(parent_id=parent_id)
+            else:
+                self._add_record()
         elif action == act_edit:
             self._edit_record()
         elif action == act_delete:
@@ -5275,6 +7161,53 @@ class DetailPanel(QWidget):
             self._inline_insert_todo()
         elif action_id == 'insert_note':
             self._inline_insert_note()
+        elif action_id == 'insert_sticker':
+            self._insert_sticker()
+    
+    def _insert_sticker(self):
+        """插入贴图：从素材库选择并作为可拖动文本框形式插入"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QGridLayout, QPushButton, QLabel
+        # 简易素材库：常用医学符号
+        stickers = [
+            ('★', '星标'), ('✓', '正确'), ('✗', '错误'), ('!', '警告'),
+            ('?', '疑问'), ('→', '右箭头'), ('←', '左箭头'), ('↑', '上箭头'),
+            ('↓', '下箭头'), ('●', '实心圆'), ('○', '空心圆'), ('■', '实心方'),
+        ]
+        dlg = QDialog(self)
+        dlg.setWindowTitle('选择贴图')
+        dlg.setFixedSize(320, 240)
+        dlg.setStyleSheet("""
+            QDialog { background: #2a2a30; }
+            QPushButton { background: #3a3a40; color: #e0e0e4; 
+                         border: 1px solid #555; border-radius: 4px;
+                         font-size: 24px; min-height: 40px; }
+            QPushButton:hover { background: #3f7bf7; border-color: #3f7bf7; }
+            QLabel { color: #c8c8cc; }
+        """)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('选择贴图素材:'))
+        grid = QGridLayout()
+        selected = {'val': None}
+        for i, (sym, name) in enumerate(stickers):
+            btn = QPushButton(sym)
+            btn.setToolTip(name)
+            btn.clicked.connect(lambda checked, s=sym: (selected.update({'val': s}), dlg.accept()))
+            grid.addWidget(btn, i // 4, i % 4)
+        v.addLayout(grid)
+        if dlg.exec_() == QDialog.Accepted and selected['val']:
+            # 作为可拖动文本框插入
+            if not hasattr(self, '_textboxes'):
+                self._textboxes = []
+            tb = _DraggableTextBox(self.inline_text_edit.viewport())
+            tb.text_edit.setPlainText(selected['val'])
+            tb.text_edit.setFont(QFont('Microsoft YaHei', 24, QFont.Bold))
+            tb.text_edit.setAlignment(Qt.AlignCenter)
+            tb.resize(80, 80)
+            tb.move(50, 50)
+            tb.removed.connect(lambda: self._textboxes.remove(tb) if tb in self._textboxes else None)
+            tb.show()
+            tb.raise_()
+            self._textboxes.append(tb)
 
     def eventFilter(self, obj, event):
         """事件过滤器 - 检测编辑器中图片的点击 + 标签拖动脱离"""
@@ -5296,53 +7229,75 @@ class DetailPanel(QWidget):
             elif event.type() == event.MouseButtonRelease:
                 self._tab_drag_idx = None
                 self._tab_drag_start = None
-        # 编辑器图片点击检测
+        # 编辑器图片点击检测 - 不拦截，让 _ImageEditableTextEdit 自行处理选中逻辑
+        # 仅在双击图片时打开完整编辑器
         if obj == self.inline_text_edit.viewport() and self._is_edit_mode:
-            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
-                cursor = self.inline_text_edit.cursorForPosition(
-                    self.inline_text_edit.viewport().mapFromParent(event.globalPos())
-                    if hasattr(event, 'globalPos') else event.pos()
-                )
-                # 检查点击位置是否为图片
+            if event.type() == event.MouseButtonDblClick and event.button() == Qt.LeftButton:
+                cursor = self.inline_text_edit.cursorForPosition(event.pos())
                 cursor.movePosition(QTextCursor.Right)
                 char_fmt = cursor.charFormat()
                 if char_fmt.isImageFormat():
-                    img_fmt = char_fmt.toImageFormat()
-                    img_path = img_fmt.name()
+                    img_path = char_fmt.toImageFormat().name()
                     if img_path:
-                        global_pos = self.inline_text_edit.viewport().mapToGlobal(event.pos())
-                        self._image_edit_popup.show_at_image(img_path, global_pos)
+                        self._open_image_editor(img_path)
                         return True
-                # 隐藏图片编辑弹窗
-                self._image_edit_popup.hide()
         return super().eventFilter(obj, event)
 
     def _open_image_editor(self, image_path):
         """打开完整图片编辑器"""
         self._image_edit_popup.hide()
-        dlg = ImageEditorDialog(image_path, self, active_db=self.active_db,
-                                user_password=self.user_password)
-        dlg.image_updated.connect(self._on_image_updated)
-        dlg.exec_()
+        if not image_path or not os.path.exists(image_path):
+            QMessageBox.warning(self, '错误', f'图片文件不存在: {image_path}')
+            return
+        try:
+            dlg = ImageEditorDialog(image_path, self, active_db=self.active_db,
+                                    user_password=self.user_password)
+            dlg.image_updated.connect(self._on_image_updated)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, '错误', f'打开图片编辑器失败: {e}')
 
     def _quick_annotate_image(self, image_path, tool_id):
         """快速标注图片 - 打开编辑器并选中对应工具"""
         self._image_edit_popup.hide()
-        dlg = ImageEditorDialog(image_path, self, active_db=self.active_db,
-                                user_password=self.user_password)
-        dlg.image_updated.connect(self._on_image_updated)
-        # 设置工具和样式
-        style = self._image_edit_popup.get_style()
-        dlg.tool = tool_id
-        dlg.current_color = style['color']
-        dlg.current_line_width = style['width']
-        dlg.current_line_style = style['style']
-        dlg.exec_()
+        # 检查图片路径是否存在
+        if not image_path or not os.path.exists(image_path):
+            QMessageBox.warning(self, '错误', f'图片文件不存在: {image_path}')
+            return
+        try:
+            dlg = ImageEditorDialog(image_path, self, active_db=self.active_db,
+                                    user_password=self.user_password)
+            dlg.image_updated.connect(self._on_image_updated)
+            # 设置工具（会同步canvas.tool和工具栏选中状态）
+            dlg._set_tool(tool_id)
+            # 同步样式
+            style = self._image_edit_popup.get_style()
+            dlg.current_color = style['color']
+            dlg.current_line_width = style['width']
+            dlg.current_line_style = style['style']
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, '错误', f'打开图片编辑器失败: {e}')
 
     def _on_image_updated(self, image_path):
         """图片编辑器更新后刷新编辑器中的图片"""
+        if not image_path:
+            return
+        # 重新加载文档中的图片资源
+        doc = self.inline_text_edit.document()
+        if os.path.exists(image_path):
+            pixmap = QPixmap(image_path)
+            if not pixmap.isNull():
+                # 用文件路径作为资源名重新加载
+                url = QUrl.fromLocalFile(image_path)
+                doc.addResource(QTextDocument.ImageResource, url, pixmap)
+                # 同时用原始名称（可能不含file:///前缀）重新加载
+                doc.addResource(QTextDocument.ImageResource, QUrl(image_path), pixmap)
         # 刷新编辑器显示
-        self.inline_text_edit.update()
+        doc.markContentsDirty(0, doc.characterCount())
+        # 自动保存笔记内容
+        self._inline_save_timer.stop()
+        self._inline_save_current()
 
     # ── 内嵌编辑器格式化操作 ──
     def _inline_set_heading(self, idx):
@@ -5370,10 +7325,12 @@ class DetailPanel(QWidget):
         self.inline_text_edit.setCurrentCharFormat(fmt)
 
     def _inline_toggle_bullet_list(self):
-        self.inline_text_edit.insertList(QTextListFormat.ListDisc)
+        cursor = self.inline_text_edit.textCursor()
+        cursor.insertList(QTextListFormat.ListDisc)
 
     def _inline_toggle_ordered_list(self):
-        self.inline_text_edit.insertList(QTextListFormat.ListDecimal)
+        cursor = self.inline_text_edit.textCursor()
+        cursor.insertList(QTextListFormat.ListDecimal)
 
     def _inline_align_left(self):
         self.inline_text_edit.setAlignment(Qt.AlignLeft)
@@ -5407,7 +7364,13 @@ class DetailPanel(QWidget):
             ext = os.path.splitext(fp)[1]
             filename = str(uuid.uuid4())[:8] + ext
             dest = os.path.join(img_dir, filename)
+            
+            # 先复制文件，然后检查是否需要压缩
             shutil.copy2(fp, dest)
+            
+            # 如果图像像素太大，自动压缩
+            self.inline_text_edit._compress_image_if_needed(dest)
+            
             # 尝试加密存储到数据库
             if self.active_db and self.user_password:
                 try:
@@ -5567,7 +7530,7 @@ class DetailPanel(QWidget):
             )
 
     def _show_inline_context_menu(self, pos):
-        """显示内嵌编辑器右键菜单（Trilium Notes 风格增强版）"""
+        """显示内嵌编辑器右键菜单（支持剪贴板粘贴图片和表格）"""
         from PyQt5.QtWidgets import QMenu
         menu = QMenu(self)
         menu.setStyleSheet("QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; padding: 4px; }"
@@ -5580,6 +7543,8 @@ class DetailPanel(QWidget):
         act_cut = menu.addAction('剪切')
         act_copy = menu.addAction('复制')
         act_paste = menu.addAction('粘贴')
+        act_paste_image = menu.addAction('粘贴图片')
+        act_paste_table = menu.addAction('粘贴表格')
         menu.addSeparator()
         # 格式选项
         act_bold = menu.addAction('加粗')
@@ -5590,11 +7555,11 @@ class DetailPanel(QWidget):
         # 插入选项
         insert_menu = menu.addMenu('插入')
         insert_menu.setStyleSheet(menu.styleSheet())
-        act_insert_image = insert_menu.addAction('📷 插入图片')
-        act_insert_table = insert_menu.addAction('📊 插入表格')
-        act_insert_link = insert_menu.addAction('🔗 插入链接')
-        act_insert_hr = insert_menu.addAction('➖ 插入分隔线')
-        act_insert_code = insert_menu.addAction('💻 插入代码块')
+        act_insert_image = insert_menu.addAction('插入图片')
+        act_insert_table = insert_menu.addAction('插入表格')
+        act_insert_link = insert_menu.addAction('插入链接')
+        act_insert_hr = insert_menu.addAction('插入分隔线')
+        act_insert_code = insert_menu.addAction('插入代码块')
         menu.addSeparator()
         act_select_all = menu.addAction('全选')
 
@@ -5609,6 +7574,10 @@ class DetailPanel(QWidget):
             self.inline_text_edit.copy()
         elif action == act_paste:
             self.inline_text_edit.paste()
+        elif action == act_paste_image:
+            self._inline_paste_image()
+        elif action == act_paste_table:
+            self._inline_paste_table()
         elif action == act_bold:
             self._inline_toggle_bold()
         elif action == act_italic:
@@ -5629,6 +7598,40 @@ class DetailPanel(QWidget):
             self._inline_insert_code_block()
         elif action == act_select_all:
             self.inline_text_edit.selectAll()
+
+    def _inline_paste_image(self):
+        """从剪贴板粘贴图片到内嵌编辑器"""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        if mime_data.hasImage():
+            pixmap = clipboard.pixmap()
+            if not pixmap.isNull():
+                import uuid
+                img_dir = os.path.join(APP_DIR, 'images')
+                os.makedirs(img_dir, exist_ok=True)
+                filename = str(uuid.uuid4())[:8] + '.png'
+                dest = os.path.join(img_dir, filename)
+                pixmap.save(dest)
+                self.inline_text_edit._compress_image_if_needed(dest)
+                self.inline_text_edit.insertHtml(f'<img src="{dest}" style="max-width:100%; margin:8px 0;">')
+
+    def _inline_paste_table(self):
+        """从剪贴板粘贴表格到内嵌编辑器"""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        if mime_data.hasText():
+            text = mime_data.text()
+            rows = text.strip().split('\n')
+            if len(rows) > 0:
+                html = '<table border="1" style="border-collapse:collapse; margin:8px 0;">'
+                for row in rows:
+                    cells = row.split('\t')
+                    html += '<tr>'
+                    for cell in cells:
+                        html += f'<td style="padding:4px 8px; border:1px solid #444;">{cell}</td>'
+                    html += '</tr>'
+                html += '</table>'
+                self.inline_text_edit.insertHtml(html)
 
     # ── 编辑模式切换 ──
     def _enter_edit_mode(self, record_id=None):
@@ -5662,8 +7665,11 @@ class DetailPanel(QWidget):
         self.inline_save_indicator.setStyleSheet("color: #f0a030; font-size: 11px; background: transparent;")
         self.record_stack.setCurrentIndex(1)
         self.inline_title_input.setFocus()
-        # 禁用列表切换避免丢失编辑
+        # 禁用列表切换避免丢失编辑，但保持列表可见
         self.record_list.setEnabled(False)
+        # 确保笔记列表面板可见且不被遮盖
+        self.record_list_panel.setVisible(True)
+        self.record_splitter.setSizes([160, max(400, self.record_splitter.width() - 160)])
 
     def _exit_edit_mode(self, save=True):
         """退出编辑模式"""
@@ -5814,10 +7820,9 @@ class DetailPanel(QWidget):
         if not self.current_disease_id:
             self.record_content_browser.setHtml('<p style="color:#666;">请先选择疾病</p>')
             return
-        # 加载影像记录
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, title, content FROM imaging_records WHERE disease_id=? ORDER BY id DESC",
+        c.execute("SELECT id, title, content, COALESCE(parent_id,0) FROM imaging_records WHERE disease_id=? ORDER BY id DESC",
                   (self.current_disease_id,))
         rows = c.fetchall()
         conn.close()
@@ -5825,11 +7830,7 @@ class DetailPanel(QWidget):
         if not rows:
             self.record_content_browser.setHtml('<p style="color:#666;">暂无影像资料，点击笔记列表标题栏菜单中的"添加笔记"创建</p>')
             return
-        for rid, title, content in rows:
-            item = QListWidgetItem(title or '无标题')
-            item.setData(Qt.UserRole, rid)
-            self.record_list.addItem(item)
-        self.record_list.setCurrentRow(0)
+        self._populate_record_list(rows)
 
     def _show_medical_tab(self):
         self._current_record_type = 'medical'
@@ -5839,7 +7840,7 @@ class DetailPanel(QWidget):
             return
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, title, content FROM medical_records WHERE disease_id=? ORDER BY id DESC",
+        c.execute("SELECT id, title, content, COALESCE(parent_id,0) FROM medical_records WHERE disease_id=? ORDER BY id DESC",
                   (self.current_disease_id,))
         rows = c.fetchall()
         conn.close()
@@ -5847,29 +7848,55 @@ class DetailPanel(QWidget):
         if not rows:
             self.record_content_browser.setHtml('<p style="color:#666;">暂无医学资料，点击"添加图文"创建</p>')
             return
-        for rid, title, content in rows:
-            item = QListWidgetItem(title or '无标题')
-            item.setData(Qt.UserRole, rid)
-            self.record_list.addItem(item)
-        self.record_list.setCurrentRow(0)
+        self._populate_record_list(rows)
 
     def _show_anatomy_tab(self):
         self._current_record_type = 'anatomy'
         self.record_list.clear()
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
-        c.execute("SELECT id, title, content FROM anatomy_records ORDER BY id DESC")
+        c.execute("SELECT id, title, content, COALESCE(parent_id,0) FROM anatomy_records ORDER BY id DESC")
         rows = c.fetchall()
         conn.close()
         self._current_records = [(r[0], r[1], r[2]) for r in rows]
         if not rows:
             self.record_content_browser.setHtml('<p style="color:#666;">暂无影像解剖图谱资料，点击"添加图文"创建</p>')
             return
-        for rid, title, content in rows:
-            item = QListWidgetItem(title or '无标题')
-            item.setData(Qt.UserRole, rid)
-            self.record_list.addItem(item)
-        self.record_list.setCurrentRow(0)
+        self._populate_record_list(rows)
+
+    def _populate_record_list(self, rows):
+        """填充笔记列表，支持层级显示和+按钮"""
+        # 构建父子关系
+        children_map = {}  # parent_id -> [(id, title)]
+        root_items = []    # [(id, title)]
+        for r in rows:
+            rid, title, content, parent_id = r[0], r[1], r[2], r[3]
+            if parent_id and parent_id != 0:
+                children_map.setdefault(parent_id, []).append((rid, title))
+            else:
+                root_items.append((rid, title))
+        
+        def add_items(items, depth=0):
+            for rid, title in items:
+                item = QListWidgetItem()
+                indent = '  ' * depth
+                has_children = rid in children_map
+                prefix = f'{indent}▶ ' if has_children else f'{indent}'
+                item.setText(f'{prefix}{title or "无标题"}')
+                item.setData(Qt.UserRole, rid)
+                item.setData(Qt.UserRole + 1, depth)
+                # 子笔记缩进后字体稍小
+                if depth > 0:
+                    f = item.font()
+                    f.setPointSize(11)
+                    item.setFont(f)
+                self.record_list.addItem(item)
+                if has_children:
+                    add_items(children_map[rid], depth + 1)
+        
+        add_items(root_items)
+        if self.record_list.count() > 0:
+            self.record_list.setCurrentRow(0)
 
     def _on_record_list_clicked(self, row):
         """点击笔记列表项，在右侧显示内容"""
@@ -5907,7 +7934,7 @@ class DetailPanel(QWidget):
         if rid:
             self._enter_edit_mode(record_id=rid)
 
-    def _add_record(self):
+    def _add_record(self, parent_id=0):
         """添加新记录并进入编辑模式"""
         if not self.current_disease_id:
             QMessageBox.warning(self, '提示', '请先选择一个疾病')
@@ -5915,11 +7942,11 @@ class DetailPanel(QWidget):
         conn = sqlite3.connect(self.active_db)
         c = conn.cursor()
         if self._current_record_type == 'medical':
-            c.execute("INSERT INTO medical_records (disease_id, title, content) VALUES (?, ?, ?)",
-                      (self.current_disease_id, '新建笔记', ''))
+            c.execute("INSERT INTO medical_records (disease_id, parent_id, title, content) VALUES (?, ?, ?, ?)",
+                      (self.current_disease_id, parent_id, '新建笔记', ''))
         elif self._current_record_type == 'anatomy':
-            c.execute("INSERT INTO anatomy_records (title, content) VALUES (?, ?)",
-                      ('新建笔记', ''))
+            c.execute("INSERT INTO anatomy_records (parent_id, title, content) VALUES (?, ?, ?)",
+                      (parent_id, '新建笔记', ''))
         else:  # imaging
             c.execute("INSERT INTO imaging_records (disease_id, title, content) VALUES (?, ?, ?)",
                       (self.current_disease_id, '新建笔记', ''))
@@ -5935,6 +7962,72 @@ class DetailPanel(QWidget):
                 break
         # 进入编辑模式
         self._enter_edit_mode(record_id=new_id)
+
+    def _show_record_item_menu(self, pos):
+        """显示笔记列表项右键菜单（支持添加子笔记）"""
+        item = self.record_list.itemAt(pos)
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2a2a30; color: #c8c8cc; border: 1px solid #444; padding: 4px; }
+            QMenu::item { padding: 6px 24px; border-radius: 4px; }
+            QMenu::item:selected { background-color: #3f7bf7; }
+        """)
+        act_add_child = menu.addAction('+ 添加子笔记')
+        menu.addSeparator()
+        act_edit = menu.addAction('编辑')
+        act_rename = menu.addAction('重命名')
+        menu.addSeparator()
+        act_delete = menu.addAction('删除')
+        
+        action = menu.exec_(self.record_list.mapToGlobal(pos))
+        if action == act_add_child and item:
+            parent_id = item.data(Qt.UserRole)
+            self._add_record(parent_id=parent_id)
+        elif action == act_edit and item:
+            record_id = item.data(Qt.UserRole)
+            self._enter_edit_mode(record_id=record_id)
+        elif action == act_rename and item:
+            self._rename_record_item(item)
+        elif action == act_delete and item:
+            self._delete_record_item(item)
+
+    def _rename_record_item(self, item):
+        """重命名笔记"""
+        from PyQt5.QtWidgets import QInputDialog
+        current_title = item.text().replace('▶ ', '').strip()
+        new_title, ok = QInputDialog.getText(self, '重命名', '输入新标题:', text=current_title)
+        if ok and new_title.strip():
+            record_id = item.data(Qt.UserRole)
+            conn = sqlite3.connect(self.active_db)
+            c = conn.cursor()
+            if self._current_record_type == 'medical':
+                c.execute("UPDATE medical_records SET title=? WHERE id=?", (new_title.strip(), record_id))
+            elif self._current_record_type == 'anatomy':
+                c.execute("UPDATE anatomy_records SET title=? WHERE id=?", (new_title.strip(), record_id))
+            else:
+                c.execute("UPDATE imaging_records SET title=? WHERE id=?", (new_title.strip(), record_id))
+            conn.commit()
+            conn.close()
+            self._refresh_content()
+
+    def _delete_record_item(self, item):
+        """删除笔记及其子笔记"""
+        reply = QMessageBox.question(self, '确认删除', '确定要删除这条笔记及其所有子笔记吗？',
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
+        record_id = item.data(Qt.UserRole)
+        conn = sqlite3.connect(self.active_db)
+        c = conn.cursor()
+        if self._current_record_type == 'medical':
+            c.execute("DELETE FROM medical_records WHERE id=? OR parent_id=?", (record_id, record_id))
+        elif self._current_record_type == 'anatomy':
+            c.execute("DELETE FROM anatomy_records WHERE id=? OR parent_id=?", (record_id, record_id))
+        else:
+            c.execute("DELETE FROM imaging_records WHERE id=?", (record_id,))
+        conn.commit()
+        conn.close()
+        self._refresh_content()
 
     def _edit_record(self):
         """编辑选中的记录 - 进入内嵌编辑模式"""
@@ -6260,12 +8353,12 @@ class _DetachedTabWindow(QDialog):
         btn_save.setFixedHeight(26)
         btn_save.setFixedWidth(52)
         btn_save.setObjectName('accentBtn')
-        btn_save.clicked.connect(lambda: self._exit_edit_mode(save=True))
+        btn_save.clicked.connect(lambda checked: self._exit_edit_mode(save=True))
         etl.addWidget(btn_save)
         btn_cancel = QPushButton('取消')
         btn_cancel.setFixedHeight(26)
         btn_cancel.setFixedWidth(52)
-        btn_cancel.clicked.connect(lambda: self._exit_edit_mode(save=False))
+        btn_cancel.clicked.connect(lambda checked: self._exit_edit_mode(save=False))
         etl.addWidget(btn_cancel)
         edit_content_layout.addWidget(edit_title_bar)
         # 分隔线
@@ -6343,7 +8436,7 @@ class _DetachedTabWindow(QDialog):
             html += f'<div style="color:#c8c8cc; line-height:1.8;">{content or ""}</div>'
             self.content_browser.setHtml(html)
 
-    def _show_record_menu(self):
+    def _show_record_menu(self, checked=False):
         """显示记录操作菜单"""
         menu = QMenu(self)
         menu.setStyleSheet("""
@@ -6520,7 +8613,7 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(0)
 
         # 自定义标题栏
-        self.title_bar = _CustomTitleBar(self, f'RadAtlas {APP_VERSION} 影像图鉴助手')
+        self.title_bar = _CustomTitleBar(self, f'RadAtlas {APP_VERSION} 影像图鉴助手  |  楚雄州人民医院 医学影像中心 张兴文')
         root_layout.addWidget(self.title_bar)
 
         # 菜单栏（手动添加到布局中，确保在标题栏之下）
@@ -6558,6 +8651,16 @@ class MainWindow(QMainWindow):
         ai_config_action = QAction('AI 配置', self)
         ai_config_action.triggered.connect(self.show_ai_config)
         file_menu.addAction(ai_config_action)
+
+        # AI查询菜单
+        ai_menu = menubar.addMenu('AI查询')
+        ai_diagnosis_action = QAction('影像诊断查询', self)
+        ai_diagnosis_action.triggered.connect(self.show_ai_diagnosis)
+        ai_menu.addAction(ai_diagnosis_action)
+
+        ai_kb_config_action = QAction('知识库配置', self)
+        ai_kb_config_action.triggered.connect(self.show_kb_config)
+        ai_menu.addAction(ai_kb_config_action)
 
         file_menu.addSeparator()
 
@@ -6652,6 +8755,22 @@ class MainWindow(QMainWindow):
         self.disease_list = QListWidget()
         self.disease_list.currentItemChanged.connect(self.on_disease_selected)
         self.disease_list.itemDoubleClicked.connect(self.on_disease_double_clicked)
+        self.disease_list.setStyleSheet("""
+            QListWidget {
+                border: none; background: transparent; outline: none;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,6);
+                color: #c0c0c8; border-radius: 4px; margin: 1px 2px;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(63,123,247,40); color: #e0e0e4;
+            }
+            QListWidget::item:hover {
+                background-color: rgba(255,255,255,8); color: #e0e0e4;
+            }
+        """)
         left_layout.addWidget(self.disease_list)
 
         splitter.addWidget(left_panel)
@@ -6824,6 +8943,8 @@ class MainWindow(QMainWindow):
                 header = QListWidgetItem(f'── {system} ──')
                 header.setFlags(header.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled)
                 header.setData(Qt.UserRole, None)
+                header.setForeground(QColor('#666670'))
+                header.setFont(QFont("Microsoft YaHei", 10))
                 self.disease_list.addItem(header)
 
             display = name_cn or name_en or f'疾病 #{did}'
@@ -6831,6 +8952,19 @@ class MainWindow(QMainWindow):
                 display = f'{name_cn} ({name_en})'
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, did)
+
+            # 搜索时高亮匹配项
+            if search:
+                search_lower = search.lower()
+                display_lower = display.lower()
+                if search_lower in display_lower:
+                    # 高亮匹配项：使用醒目的前景色和背景色
+                    t = THEMES.get(self.current_theme, THEMES['深蓝暗夜'])
+                    item.setForeground(QColor(t.get('select_fg', '#5a91ff')))
+                    item.setBackground(QColor(t.get('select_bg', '#2a3a5a')))
+                    item.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+                else:
+                    item.setForeground(QColor('#888890'))
             self.disease_list.addItem(item)
 
     def on_disease_selected(self, current, previous):
@@ -6975,13 +9109,31 @@ class MainWindow(QMainWindow):
         dlg = AIConfigDialog(self)
         dlg.exec_()
 
+    def show_ai_diagnosis(self):
+        """显示AI影像诊断查询对话框"""
+        dlg = AIDiagnosisDialog(self)
+        dlg.diagnosis_clicked.connect(self._on_diagnosis_selected)
+        dlg.exec_()
+
+    def _on_diagnosis_selected(self, data):
+        """AI诊断条目被选中 - 在疾病列表中搜索匹配的疾病"""
+        disease_name = data.get('disease_name', '')
+        if disease_name:
+            self.search_input.setText(disease_name)
+            self.do_search()
+
+    def show_kb_config(self):
+        """显示知识库配置"""
+        dlg = _KBConfigDialog(self)
+        dlg.exec_()
+
     # ── 搜索 ──
-    def do_search(self):
+    def do_search(self, checked=False):
         keyword = self.search_input.text().strip()
         self.load_disease_list(search=keyword if keyword else None)
         self.statusBar().showMessage(f'搜索: {keyword}' if keyword else '就绪')
 
-    def clear_search(self):
+    def clear_search(self, checked=False):
         self.search_input.clear()
         self.load_disease_list()
         self.statusBar().showMessage(f'就绪  |  {APP_AUTHOR}  |  {APP_VERSION}')
@@ -7149,6 +9301,14 @@ class MainWindow(QMainWindow):
         pwd_input.setPlaceholderText('输入加密密码')
         pwd_input.setFixedHeight(28)
         pwd_layout.addWidget(pwd_input)
+        enc_pwd_toggle = QPushButton()
+        enc_pwd_toggle.setFixedSize(24, 28)
+        enc_pwd_toggle.setCursor(Qt.PointingHandCursor)
+        enc_pwd_toggle.setText('\U0001F441')
+        enc_pwd_toggle.setCheckable(True)
+        enc_pwd_toggle.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
+        enc_pwd_toggle.clicked.connect(lambda checked: pwd_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        pwd_layout.addWidget(enc_pwd_toggle)
         pwd_widget.setVisible(False)
         flayout.addWidget(pwd_widget)
 
@@ -7755,7 +9915,7 @@ class MainWindow(QMainWindow):
 
         prs.save(save_path)
 
-    def do_logout(self):
+    def do_logout(self, checked=False):
         self.close()
         QApplication.instance().quit()
 
