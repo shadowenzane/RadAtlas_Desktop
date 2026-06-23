@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QInputDialog, QSlider, QGridLayout, QAbstractItemView,
     QStackedWidget, QSizeGrip, QRadioButton, QFormLayout
 )
-from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, QPropertyAnimation, QEasingCurve, QUrl, QObject
+from PyQt5.QtCore import Qt, QSize, QStringListModel, pyqtSignal, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, QPropertyAnimation, QEasingCurve, QUrl, QObject, QThread
 from PyQt5.QtWidgets import QGraphicsOpacityEffect
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor, QTextListFormat, QTextCharFormat, QPixmap, QPainter, QPainterPath, QPen, QPolygon, QBrush, QTransform, QTextDocument, QImage
 
@@ -1130,7 +1130,6 @@ class AIDiagnosisDialog(QDialog):
         self.status_label.setStyleSheet("color: #3f7bf7; font-size: 12px;")
 
         # 在后台线程中执行查询
-        from PyQt5.QtCore import QThread
         self._query_thread = QThread()
         self._query_worker = _DiagnosisWorker(exam_type, keywords, selected, kb_config)
         self._query_worker.moveToThread(self._query_thread)
