@@ -905,23 +905,11 @@ class AIConfigDialog(QDialog):
 
         btn.setEnabled(False)
         btn.setText('测试中...')
-        from PyQt5.QtCore import QThread
-        class _TestWorker(QObject):
-            finished = pyqtSignal(dict)
-            def __init__(self, provider, model, api_key, custom_url):
-                super().__init__()
-                self.provider = provider
-                self.model = model
-                self.api_key = api_key
-                self.custom_url = custom_url
-            def run(self):
-                result = test_llm_connection(self.provider, self.model, self.api_key, self.custom_url)
-                self.finished.emit(result)
 
-        thread = QThread()
-        worker = _TestWorker(provider, model, api_key, custom_url)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        self._test_thread = QThread()
+        self._test_worker = _LLMTestWorker(provider, model, api_key, custom_url)
+        self._test_worker.moveToThread(self._test_thread)
+        self._test_thread.started.connect(self._test_worker.run)
 
         def _on_finished(result):
             btn.setEnabled(True)
@@ -930,10 +918,10 @@ class AIConfigDialog(QDialog):
                 QMessageBox.information(self, '测试成功', result['message'])
             else:
                 QMessageBox.warning(self, '测试失败', result['message'])
-            thread.quit()
+            self._test_thread.quit()
 
-        worker.finished.connect(_on_finished)
-        thread.start()
+        self._test_worker.finished.connect(_on_finished)
+        self._test_thread.start()
 
     def _save(self, checked=False):
         """保存配置"""
@@ -1333,6 +1321,35 @@ class AIDiagnosisDialog(QDialog):
         return kb_configs.get(kb_type, {'type': kb_type, 'api_key': ''})
 
 
+class _LLMTestWorker(QObject):
+    """LLM联通测试后台工作线程"""
+    finished = pyqtSignal(dict)
+
+    def __init__(self, provider, model, api_key, custom_url):
+        super().__init__()
+        self.provider = provider
+        self.model = model
+        self.api_key = api_key
+        self.custom_url = custom_url
+
+    def run(self):
+        result = test_llm_connection(self.provider, self.model, self.api_key, self.custom_url)
+        self.finished.emit(result)
+
+
+class _KBTestWorker(QObject):
+    """知识库联通测试后台工作线程"""
+    finished = pyqtSignal(dict)
+
+    def __init__(self, kb_config):
+        super().__init__()
+        self.kb_config = kb_config
+
+    def run(self):
+        result = test_kb_connection(self.kb_config)
+        self.finished.emit(result)
+
+
 class _DiagnosisWorker(QObject):
     """后台诊断查询工作线程"""
     finished = pyqtSignal(dict)
@@ -1485,20 +1502,11 @@ class _KBConfigDialog(QDialog):
 
         btn.setEnabled(False)
         btn.setText('测试中...')
-        from PyQt5.QtCore import QThread
-        class _KBTestWorker(QObject):
-            finished = pyqtSignal(dict)
-            def __init__(self, cfg):
-                super().__init__()
-                self.cfg = cfg
-            def run(self):
-                result = test_kb_connection(self.cfg)
-                self.finished.emit(result)
 
-        thread = QThread()
-        worker = _KBTestWorker(kb_config)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        self._kb_test_thread = QThread()
+        self._kb_test_worker = _KBTestWorker(kb_config)
+        self._kb_test_worker.moveToThread(self._kb_test_thread)
+        self._kb_test_thread.started.connect(self._kb_test_worker.run)
 
         def _on_finished(result):
             btn.setEnabled(True)
@@ -1507,10 +1515,10 @@ class _KBConfigDialog(QDialog):
                 QMessageBox.information(self, '测试成功', result['message'])
             else:
                 QMessageBox.warning(self, '测试失败', result['message'])
-            thread.quit()
+            self._kb_test_thread.quit()
 
-        worker.finished.connect(_on_finished)
-        thread.start()
+        self._kb_test_worker.finished.connect(_on_finished)
+        self._kb_test_thread.start()
 
     def _save(self, checked=False):
         config = load_config()

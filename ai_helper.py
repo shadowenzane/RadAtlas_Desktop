@@ -532,28 +532,25 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
 def _query_knowledge_base(kb_config, exam_type, keywords):
     """查询知识库获取参考信息，返回 (上下文文本, 文档快照列表)
 
+    异常会向上抛出，由调用方捕获处理。
+
     Returns:
         tuple: (context_str, doc_snapshots)
-            context_str: 拼接的文本上下文，用于传给LLM
-            doc_snapshots: 文档快照列表，每个元素为 dict:
-                {'doc_name': str, 'page': str, 'snippet': str, 'url': str, 'source': str}
     """
     kb_type = kb_config.get('type', 'tencent')
     api_key = kb_config.get('api_key', '')
 
     if not api_key:
-        return '', []
+        raise ValueError('知识库 API Key 为空')
 
-    try:
-        if kb_type == 'tencent':
-            return _query_tencent_kb(kb_config, exam_type, keywords)
-        elif kb_type == 'volcengine':
-            return _query_volcengine_kb(kb_config, exam_type, keywords)
-        elif kb_type == 'notebooklm':
-            return _query_notebooklm_kb(kb_config, exam_type, keywords)
-    except Exception:
-        return '', []
-    return '', []
+    if kb_type == 'tencent':
+        return _query_tencent_kb(kb_config, exam_type, keywords)
+    elif kb_type == 'volcengine':
+        return _query_volcengine_kb(kb_config, exam_type, keywords)
+    elif kb_type == 'notebooklm':
+        return _query_notebooklm_kb(kb_config, exam_type, keywords)
+    else:
+        raise ValueError(f'未知知识库类型: {kb_type}')
 
 
 def _query_tencent_kb(kb_config, exam_type, keywords):
