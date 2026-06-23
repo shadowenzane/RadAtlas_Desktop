@@ -667,6 +667,15 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
 
     # 解析响应（腾讯云API响应嵌套在Response字段中）
     response_data = data.get('Response', data)
+
+    # 检查API错误
+    if 'Error' in response_data:
+        err_code = response_data['Error'].get('Code', '')
+        err_msg = response_data['Error'].get('Message', '')
+        if 'not exist' in err_msg.lower():
+            raise ValueError(f'知识库ID不存在，请检查配置。当前ID: {knowledge_base_id}\n请在腾讯云LKE控制台 > 知识库管理中复制正确的KnowledgeBaseId（如: 1840331836752986944）')
+        raise ValueError(f'腾讯知识库API错误 [{err_code}]: {err_msg}')
+
     records = response_data.get('Records', [])
 
     doc_snapshots = []
