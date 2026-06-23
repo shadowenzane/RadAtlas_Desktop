@@ -479,6 +479,61 @@ class _PinBtn(QPushButton):
         self.update()
 
 
+class _PasswordLineEdit(QLineEdit):
+    """带悬浮可见性切换按钮的密码输入框
+
+    - 眼睛图标悬浮在输入框右侧末端
+    - 输入框为空时自动隐藏图标
+    - 点击图标切换密码可见性
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEchoMode(QLineEdit.Password)
+        # 悬浮切换按钮
+        self._toggle_btn = QPushButton(self)
+        self._toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._toggle_btn.setText('\U0001F441')
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setFocusPolicy(Qt.NoFocus)
+        self._toggle_btn.setStyleSheet("""
+            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; padding: 0 4px; }
+            QPushButton:hover { color: #c0c0c8; }
+            QPushButton:checked { color: #3f7bf7; }
+        """)
+        self._toggle_btn.clicked.connect(self._on_toggle)
+        self._toggle_btn.hide()
+        # 文本变化时显示/隐藏按钮
+        self.textChanged.connect(self._on_text_changed)
+        # 留出右侧空间给按钮
+        self._btn_width = 28
+
+    def _on_text_changed(self, text):
+        """有文本时显示按钮，无文本时隐藏"""
+        if text:
+            self._toggle_btn.show()
+        else:
+            self._toggle_btn.hide()
+            # 恢复密码模式
+            if self._toggle_btn.isChecked():
+                self._toggle_btn.setChecked(False)
+                self.setEchoMode(QLineEdit.Password)
+
+    def _on_toggle(self, checked):
+        """切换密码可见性"""
+        self.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+
+    def resizeEvent(self, event):
+        """重新定位悬浮按钮到右侧末端"""
+        super().resizeEvent(event)
+        h = self.height()
+        self._toggle_btn.setFixedHeight(h)
+        self._toggle_btn.setGeometry(self.width() - self._btn_width, 0, self._btn_width, h)
+
+    def setEchoMode(self, mode):
+        """重写以同步按钮状态"""
+        super().setEchoMode(mode)
+
+
 class _CustomTitleBar(QWidget):
     """自定义标题栏，与主题配色一致"""
     return_clicked = pyqtSignal()
@@ -640,32 +695,11 @@ class LoginDialog(QDialog):
         self.username_input.setFixedHeight(44)
         content.addWidget(self.username_input)
 
-        self.password_input = QLineEdit()
+        self.password_input = _PasswordLineEdit()
         self.password_input.setPlaceholderText('密码')
-        self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setFixedHeight(44)
         self.password_input.returnPressed.connect(self.do_login)
-
-        # 密码可见性切换
-        pwd_row = QHBoxLayout()
-        pwd_row.setSpacing(0)
-        pwd_row.addWidget(self.password_input, stretch=1)
-        self.pwd_toggle = QPushButton()
-        self.pwd_toggle.setFixedSize(36, 44)
-        self.pwd_toggle.setCursor(Qt.PointingHandCursor)
-        self.pwd_toggle.setText('\U0001F441')
-        self.pwd_toggle.setCheckable(True)
-        self.pwd_toggle.setStyleSheet("""
-            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; }
-            QPushButton:hover { color: #c0c0c8; }
-        """)
-        self.pwd_toggle.clicked.connect(lambda checked: self.password_input.setEchoMode(
-            QLineEdit.Normal if checked else QLineEdit.Password))
-        pwd_row.addWidget(self.pwd_toggle)
-        pwd_widget = QWidget()
-        pwd_widget.setLayout(pwd_row)
-        pwd_widget.setFixedHeight(44)
-        content.addWidget(pwd_widget)
+        content.addWidget(self.password_input)
 
         content.addSpacing(8)
 
@@ -801,28 +835,10 @@ class AIConfigDialog(QDialog):
 
         # API Key
         row_layout.addWidget(QLabel('API Key:'), 2, 1)
-        api_key_input = QLineEdit()
-        api_key_input.setEchoMode(QLineEdit.Password)
+        api_key_input = _PasswordLineEdit()
         api_key_input.setText(config.get('api_key', ''))
         api_key_input.setPlaceholderText('输入API Key')
-
-        # API Key 可见性切换
-        api_key_row = QHBoxLayout()
-        api_key_row.setSpacing(4)
-        api_key_row.addWidget(api_key_input, stretch=1)
-        api_key_toggle = QPushButton()
-        api_key_toggle.setFixedSize(28, 28)
-        api_key_toggle.setCursor(Qt.PointingHandCursor)
-        api_key_toggle.setText('\U0001F441')
-        api_key_toggle.setCheckable(True)
-        api_key_toggle.setStyleSheet("""
-            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; }
-            QPushButton:hover { color: #c0c0c8; }
-        """)
-        api_key_toggle.clicked.connect(lambda checked: api_key_input.setEchoMode(
-            QLineEdit.Normal if checked else QLineEdit.Password))
-        api_key_row.addWidget(api_key_toggle)
-        row_layout.addLayout(api_key_row, 2, 2)
+        row_layout.addWidget(api_key_input, 2, 2)
 
         # 自定义URL
         row_layout.addWidget(QLabel('自定义URL:'), 3, 1)
@@ -1279,33 +1295,6 @@ class _KBConfigDialog(QDialog):
         self.setMinimumSize(520, 520)
         self._init_ui()
 
-    @staticmethod
-    def _add_password_field(layout, label, line_edit):
-        """为密码输入框添加可见性切换按钮"""
-        row_layout = QHBoxLayout()
-        row_layout.setSpacing(4)
-        row_layout.addWidget(line_edit, stretch=1)
-
-        toggle_btn = QPushButton()
-        toggle_btn.setFixedSize(28, 28)
-        toggle_btn.setCursor(Qt.PointingHandCursor)
-        toggle_btn.setToolTip('显示/隐藏')
-        toggle_btn.setStyleSheet("""
-            QPushButton { border: none; background: transparent; color: #888890; font-size: 14px; }
-            QPushButton:hover { color: #c0c0c8; }
-        """)
-        # 绘制眼睛图标
-        toggle_btn.setText('\U0001F441')
-        toggle_btn.setCheckable(True)
-        toggle_btn.setChecked(False)
-
-        def _toggle_visibility(checked):
-            line_edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
-
-        toggle_btn.clicked.connect(_toggle_visibility)
-        row_layout.addWidget(toggle_btn)
-        layout.addRow(label, row_layout)
-
     def _init_ui(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1328,10 +1317,10 @@ class _KBConfigDialog(QDialog):
         tencent_group.setStyleSheet(group_style)
         tencent_layout = QFormLayout(tencent_group)
         tencent_cfg = kb_configs.get('tencent', {})
-        self.tencent_api_key = QLineEdit(tencent_cfg.get('api_key', ''))
-        self.tencent_api_key.setEchoMode(QLineEdit.Password)
+        self.tencent_api_key = _PasswordLineEdit()
+        self.tencent_api_key.setText(tencent_cfg.get('api_key', ''))
         self.tencent_api_key.setPlaceholderText('腾讯云API Key')
-        self._add_password_field(tencent_layout, 'API Key:', self.tencent_api_key)
+        tencent_layout.addRow('API Key:', self.tencent_api_key)
         self.tencent_bot_id = QLineEdit(tencent_cfg.get('bot_id', ''))
         self.tencent_bot_id.setPlaceholderText('知识库应用ID (BotId)')
         tencent_layout.addRow('应用ID:', self.tencent_bot_id)
@@ -1342,10 +1331,10 @@ class _KBConfigDialog(QDialog):
         volc_group.setStyleSheet(group_style)
         volc_layout = QFormLayout(volc_group)
         volc_cfg = kb_configs.get('volcengine', {})
-        self.volc_api_key = QLineEdit(volc_cfg.get('api_key', ''))
-        self.volc_api_key.setEchoMode(QLineEdit.Password)
+        self.volc_api_key = _PasswordLineEdit()
+        self.volc_api_key.setText(volc_cfg.get('api_key', ''))
         self.volc_api_key.setPlaceholderText('火山引擎API Key')
-        self._add_password_field(volc_layout, 'API Key:', self.volc_api_key)
+        volc_layout.addRow('API Key:', self.volc_api_key)
         self.volc_endpoint_id = QLineEdit(volc_cfg.get('endpoint_id', ''))
         self.volc_endpoint_id.setPlaceholderText('推理接入点ID (EndpointId)')
         volc_layout.addRow('接入点ID:', self.volc_endpoint_id)
@@ -1359,10 +1348,10 @@ class _KBConfigDialog(QDialog):
         nblm_group.setStyleSheet(group_style)
         nblm_layout = QFormLayout(nblm_group)
         nblm_cfg = kb_configs.get('notebooklm', {})
-        self.nblm_api_key = QLineEdit(nblm_cfg.get('api_key', ''))
-        self.nblm_api_key.setEchoMode(QLineEdit.Password)
+        self.nblm_api_key = _PasswordLineEdit()
+        self.nblm_api_key.setText(nblm_cfg.get('api_key', ''))
         self.nblm_api_key.setPlaceholderText('Google AI Studio API Key')
-        self._add_password_field(nblm_layout, 'API Key:', self.nblm_api_key)
+        nblm_layout.addRow('API Key:', self.nblm_api_key)
         self.nblm_corpus_id = QLineEdit(nblm_cfg.get('corpus_id', ''))
         self.nblm_corpus_id.setPlaceholderText('语料库ID (Corpus ID, 可选)')
         nblm_layout.addRow('语料库ID:', self.nblm_corpus_id)
@@ -1582,20 +1571,9 @@ class UserManageDialog(QDialog):
         self.new_username = QLineEdit()
         self.new_username.setPlaceholderText('用户名')
         add_form.addWidget(self.new_username)
-        self.new_password = QLineEdit()
+        self.new_password = _PasswordLineEdit()
         self.new_password.setPlaceholderText('密码')
-        self.new_password.setEchoMode(QLineEdit.Password)
-        pwd_row = QHBoxLayout()
-        pwd_row.addWidget(self.new_password, stretch=1)
-        new_pwd_toggle = QPushButton()
-        new_pwd_toggle.setFixedSize(24, 24)
-        new_pwd_toggle.setCursor(Qt.PointingHandCursor)
-        new_pwd_toggle.setText('\U0001F441')
-        new_pwd_toggle.setCheckable(True)
-        new_pwd_toggle.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
-        new_pwd_toggle.clicked.connect(lambda checked: self.new_password.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
-        pwd_row.addWidget(new_pwd_toggle)
-        add_form.addLayout(pwd_row)
+        add_form.addWidget(self.new_password)
         layout.addLayout(add_form)
 
         role_row = QHBoxLayout()
@@ -1701,35 +1679,13 @@ class EditUserDialog(QDialog):
 
         # 修改密码
         layout.addWidget(QLabel('修改密码:'))
-        self.new_pwd_input = QLineEdit()
+        self.new_pwd_input = _PasswordLineEdit()
         self.new_pwd_input.setPlaceholderText('新密码')
-        self.new_pwd_input.setEchoMode(QLineEdit.Password)
-        new_pwd_row1 = QHBoxLayout()
-        new_pwd_row1.addWidget(self.new_pwd_input, stretch=1)
-        pwd_toggle1 = QPushButton()
-        pwd_toggle1.setFixedSize(24, 24)
-        pwd_toggle1.setCursor(Qt.PointingHandCursor)
-        pwd_toggle1.setText('\U0001F441')
-        pwd_toggle1.setCheckable(True)
-        pwd_toggle1.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
-        pwd_toggle1.clicked.connect(lambda checked: self.new_pwd_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
-        new_pwd_row1.addWidget(pwd_toggle1)
-        layout.addLayout(new_pwd_row1)
+        layout.addWidget(self.new_pwd_input)
 
-        self.confirm_pwd_input = QLineEdit()
+        self.confirm_pwd_input = _PasswordLineEdit()
         self.confirm_pwd_input.setPlaceholderText('确认新密码')
-        self.confirm_pwd_input.setEchoMode(QLineEdit.Password)
-        new_pwd_row2 = QHBoxLayout()
-        new_pwd_row2.addWidget(self.confirm_pwd_input, stretch=1)
-        pwd_toggle2 = QPushButton()
-        pwd_toggle2.setFixedSize(24, 24)
-        pwd_toggle2.setCursor(Qt.PointingHandCursor)
-        pwd_toggle2.setText('\U0001F441')
-        pwd_toggle2.setCheckable(True)
-        pwd_toggle2.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
-        pwd_toggle2.clicked.connect(lambda checked: self.confirm_pwd_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
-        new_pwd_row2.addWidget(pwd_toggle2)
-        layout.addLayout(new_pwd_row2)
+        layout.addWidget(self.confirm_pwd_input)
 
         pwd_btn = QPushButton('修改密码')
         pwd_btn.clicked.connect(self._change_pwd)
@@ -9296,19 +9252,10 @@ class MainWindow(QMainWindow):
         pwd_label = QLabel('密码：')
         pwd_label.setStyleSheet("color: #aaa;")
         pwd_layout.addWidget(pwd_label)
-        pwd_input = QLineEdit()
-        pwd_input.setEchoMode(QLineEdit.Password)
+        pwd_input = _PasswordLineEdit()
         pwd_input.setPlaceholderText('输入加密密码')
         pwd_input.setFixedHeight(28)
         pwd_layout.addWidget(pwd_input)
-        enc_pwd_toggle = QPushButton()
-        enc_pwd_toggle.setFixedSize(24, 28)
-        enc_pwd_toggle.setCursor(Qt.PointingHandCursor)
-        enc_pwd_toggle.setText('\U0001F441')
-        enc_pwd_toggle.setCheckable(True)
-        enc_pwd_toggle.setStyleSheet("QPushButton { border: none; background: transparent; color: #888890; font-size: 12px; } QPushButton:hover { color: #c0c0c8; }")
-        enc_pwd_toggle.clicked.connect(lambda checked: pwd_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
-        pwd_layout.addWidget(enc_pwd_toggle)
         pwd_widget.setVisible(False)
         flayout.addWidget(pwd_widget)
 

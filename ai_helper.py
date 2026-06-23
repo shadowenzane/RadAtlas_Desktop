@@ -274,11 +274,17 @@ def call_ai(disease_name, config=None):
 def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowledge_base=None):
     """并行调用多个大模型获取影像诊断结果
 
+    流程：
+    1. 并行调用各LLM获取诊断结果（不使用知识库）
+    2. 从所有成功结果中提取匹配度最高的1-3个疾病名
+    3. 用这些疾病名查询知识库，获取文档快照
+    4. 将知识库文档附加到结果中
+
     Args:
         exam_type: 检查类型 (CT/X-Ray/MRI/PET-CT)
         keywords: 关键字
-        selected_providers: 选中的提供商配置列表 [{'provider', 'model', 'api_key', ...}, ...]
-        use_knowledge_base: 知识库配置 {'type': 'tencent'|'volcengine', 'api_key': ..., ...}
+        selected_providers: 选中的提供商配置列表
+        use_knowledge_base: 知识库配置
 
     Returns:
         dict: {provider_name: {'success': bool, 'data': [...], 'error': str, 'kb_docs': [...]}}
@@ -291,11 +297,9 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
         raise ValueError('没有可用的AI配置，请先在AI配置中设置API Key')
 
     results = {}
-    # 知识库查询结果（所有模型共享同一份知识库结果）
-    shared_kb_docs = []
 
     def _query_one(provider_config):
-        """查询单个大模型"""
+        """查询单个大模型（第一阶段：不使用知识库）"""
         name = PROVIDERS.get(provider_config['provider'], {}).get('name', provider_config['provider'])
         try:
             api_key = provider_config.get('api_key', '')
@@ -311,21 +315,7 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
             else:
                 return name, {'success': False, 'data': [], 'error': f'未知提供商: {provider_config["provider"]}', 'kb_docs': []}
 
-            # 如果启用了知识库，先查询知识库获取上下文
-            kb_context = ''
-            kb_docs = []
-            if use_knowledge_base and use_knowledge_base.get('api_key'):
-                kb_context, kb_docs = _query_knowledge_base(
-                    use_knowledge_base, exam_type, keywords
-                )
-                # 保存到共享列表
-                shared_kb_docs.extend(kb_docs)
-
-            prompt_template = KB_DIAGNOSIS_PROMPT if kb_context else DIAGNOSIS_PROMPT
-            prompt = prompt_template.format(exam_type=exam_type, keywords=keywords)
-            if kb_context:
-                prompt += f'\n\n知识库参考信息：\n{kb_context}'
-
+            prompt = DIAGNOSIS_PROMPT.format(exam_type=exam_type, keywords=keywords)
             messages = [
                 {'role': 'system', 'content': '你是一个资深医学影像诊断专家。请始终以纯JSON数组格式回复，不要包含markdown代码块标记。'},
                 {'role': 'user', 'content': prompt}
@@ -334,11 +324,11 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
             data = _parse_json_response(content)
             if isinstance(data, dict):
                 data = [data]
-            return name, {'success': True, 'data': data, 'error': '', 'kb_docs': kb_docs}
+            return name, {'success': True, 'data': data, 'error': '', 'kb_docs': []}
         except Exception as e:
             return name, {'success': False, 'data': [], 'error': str(e), 'kb_docs': []}
 
-    # 并行查询
+    # 第一阶段：并行调用LLM获取诊断结果
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(_query_one, pc): pc for pc in selected_providers}
         for future in as_completed(futures):
@@ -350,19 +340,47 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
                 name = PROVIDERS.get(pc['provider'], {}).get('name', pc['provider'])
                 results[name] = {'success': False, 'data': [], 'error': str(e), 'kb_docs': []}
 
-    # 将共享的知识库文档去重后附加到每个成功的结果中
-    seen = set()
-    unique_docs = []
-    for doc in shared_kb_docs:
-        key = (doc.get('doc_name', ''), doc.get('page', ''), doc.get('snippet', '')[:50])
-        if key not in seen:
-            seen.add(key)
-            unique_docs.append(doc)
+    # 第二阶段：从成功结果中提取top 1-3疾病名，查询知识库
+    if use_knowledge_base and use_knowledge_base.get('api_key'):
+        # 收集所有成功结果中的疾病名（按置信度排序取前3）
+        disease_entries = []
+        for result in results.values():
+            if result.get('success') and result.get('data'):
+                for item in result['data']:
+                    disease_name = item.get('disease_name', '')
+                    confidence = item.get('confidence', '')
+                    if disease_name:
+                        disease_entries.append((disease_name, confidence))
 
-    if unique_docs:
-        for name, result in results.items():
-            if result.get('success'):
-                result['kb_docs'] = unique_docs
+        # 按置信度排序：高 > 中 > 低
+        conf_order = {'高': 0, '中': 1, '低': 2}
+        disease_entries.sort(key=lambda x: conf_order.get(x[1], 3))
+
+        # 去重取前3个疾病名
+        seen_names = set()
+        top_diseases = []
+        for name, _ in disease_entries:
+            if name not in seen_names:
+                seen_names.add(name)
+                top_diseases.append(name)
+            if len(top_diseases) >= 3:
+                break
+
+        if top_diseases:
+            # 用疾病名查询知识库
+            kb_query = f'{exam_type} {keywords} ' + ' '.join(top_diseases)
+            try:
+                kb_context, kb_docs = _query_knowledge_base(
+                    use_knowledge_base, exam_type, kb_query
+                )
+            except Exception:
+                kb_docs = []
+
+            # 将知识库文档附加到所有成功的结果中
+            if kb_docs:
+                for name, result in results.items():
+                    if result.get('success'):
+                        result['kb_docs'] = kb_docs
 
     return results
 
