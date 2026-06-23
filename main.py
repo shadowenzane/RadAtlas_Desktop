@@ -1397,23 +1397,20 @@ class _KBConfigDialog(QDialog):
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
         """
 
-        # 腾讯知识库
-        tencent_group = QGroupBox('腾讯知识库 (LKE)')
+        # 腾讯IMA知识库
+        tencent_group = QGroupBox('腾讯IMA知识库')
         tencent_group.setStyleSheet(group_style)
         tencent_layout = QFormLayout(tencent_group)
         tencent_cfg = kb_configs.get('tencent', {})
         self.tencent_api_key = _PasswordLineEdit()
-        self.tencent_api_key.setText(tencent_cfg.get('api_key', ''))
-        self.tencent_api_key.setPlaceholderText('腾讯云 SecretId')
-        tencent_layout.addRow('SecretId:', self.tencent_api_key)
+        self.tencent_api_key.setText(tencent_cfg.get('api_key', '') or tencent_cfg.get('client_id', ''))
+        self.tencent_api_key.setPlaceholderText('IMA Client ID')
+        tencent_layout.addRow('Client ID:', self.tencent_api_key)
         self.tencent_secret_key = _PasswordLineEdit()
-        self.tencent_secret_key.setText(tencent_cfg.get('secret_key', ''))
-        self.tencent_secret_key.setPlaceholderText('腾讯云 SecretKey')
-        tencent_layout.addRow('SecretKey:', self.tencent_secret_key)
-        self.tencent_kb_id = QLineEdit(tencent_cfg.get('knowledge_base_id', '') or tencent_cfg.get('bot_id', ''))
-        self.tencent_kb_id.setPlaceholderText('知识库ID (如: 1840331836752986944)')
-        tencent_layout.addRow('知识库ID:', self.tencent_kb_id)
-        tencent_hint = QLabel('使用腾讯云LKE知识引擎 RetrieveKnowledge API。\n需在 腾讯云控制台 > 知识引擎 > 知识库管理 中创建知识库，\n复制知识库ID填入此处。SecretId/SecretKey 在 访问管理 > API密钥管理 获取。')
+        self.tencent_secret_key.setText(tencent_cfg.get('secret_key', '') or tencent_cfg.get('api_key_secret', ''))
+        self.tencent_secret_key.setPlaceholderText('IMA API Key')
+        tencent_layout.addRow('API Key:', self.tencent_secret_key)
+        tencent_hint = QLabel('使用腾讯IMA个人知识库 OpenAPI。\n在 https://ima.qq.com/agent-interface 获取 Client ID 和 API Key。\n搜索IMA笔记中的医学影像诊断相关内容。')
         tencent_hint.setStyleSheet("color: #666670; font-size: 11px;")
         tencent_hint.setWordWrap(True)
         tencent_layout.addRow(tencent_hint)
@@ -1497,7 +1494,6 @@ class _KBConfigDialog(QDialog):
                 'type': 'tencent',
                 'api_key': self.tencent_api_key.text().strip(),
                 'secret_key': self.tencent_secret_key.text().strip(),
-                'knowledge_base_id': self.tencent_kb_id.text().strip(),
             }
         elif kb_type == 'volcengine':
             kb_config = {
@@ -1544,7 +1540,6 @@ class _KBConfigDialog(QDialog):
             'type': 'tencent',
             'api_key': self.tencent_api_key.text().strip(),
             'secret_key': self.tencent_secret_key.text().strip(),
-            'knowledge_base_id': self.tencent_kb_id.text().strip(),
         }
         config['knowledge_bases']['volcengine'] = {
             'type': 'volcengine',

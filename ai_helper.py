@@ -51,9 +51,9 @@ PROVIDERS = {
 # 知识库提供商
 KNOWLEDGE_PROVIDERS = {
     'tencent': {
-        'name': '腾讯知识库',
-        'api_url': 'https://lkeap.tencentcloudapi.com',
-        'description': '腾讯云大模型知识引擎(LKE)',
+        'name': '腾讯IMA知识库',
+        'api_url': 'https://ima.qq.com/openapi',
+        'description': '腾讯IMA个人知识库(OpenAPI)',
     },
     'volcengine': {
         'name': '火山方舟知识库',
@@ -234,16 +234,15 @@ def test_kb_connection(kb_config, timeout=15):
 
     try:
         if kb_type == 'tencent':
-            # 腾讯云LKE：使用简化的 RetrieveKnowledge 测试
-            secret_key = kb_config.get('secret_key', '')
-            kb_id = kb_config.get('knowledge_base_id', '') or kb_config.get('bot_id', '')
-            if not kb_id:
-                return {'success': False, 'message': '腾讯知识库 KnowledgeBaseId 为空'}
+            # 腾讯IMA：使用搜索笔记测试联通性
+            client_id = kb_config.get('api_key', '')
+            api_key_secret = kb_config.get('secret_key', '')
+            if not client_id or not api_key_secret:
+                return {'success': False, 'message': 'IMA Client ID 和 API Key 均不能为空'}
 
-            # 直接调用查询函数测试
             try:
                 context, docs = _query_tencent_kb(kb_config, '测试', '影像诊断测试')
-                return {'success': True, 'message': f'{kb_name}连接成功，返回{len(docs)}条文档'}
+                return {'success': True, 'message': f'{kb_name}连接成功，返回{len(docs)}条笔记'}
             except Exception as e:
                 return {'success': False, 'message': f'{kb_name}错误: {str(e)}'}
 
@@ -560,153 +559,119 @@ def _query_knowledge_base(kb_config, exam_type, keywords):
         raise ValueError(f'未知知识库类型: {kb_type}')
 
 
-def _build_tc3_signature(secret_id, secret_key, service, host, endpoint, payload_str, timestamp):
-    """构建腾讯云 TC3-HMAC-SHA256 签名
-
-    Args:
-        secret_id: 腾讯云 SecretId
-        secret_key: 腾讯云 SecretKey
-        service: 服务名 (如 lkeap)
-        host: API 域名
-        endpoint: 接口名 (如 RetrieveKnowledge)
-        payload_str: 请求体JSON字符串
-        timestamp: UNIX时间戳
-
-    Returns:
-        dict: 包含签名相关HTTP头
-    """
-    import hashlib
-    import hmac
-    from datetime import datetime, timezone
-
-    # 1. 拼接规范请求串
-    http_method = 'POST'
-    canonical_uri = '/'
-    canonical_querystring = ''
-    canonical_headers = f'content-type:application/json\nhost:{host}\nx-tc-action:{endpoint.lower()}\n'
-    signed_headers = 'content-type;host;x-tc-action'
-    hashed_payload = hashlib.sha256(payload_str.encode('utf-8')).hexdigest()
-    canonical_request = f'{http_method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{hashed_payload}'
-
-    # 2. 拼接签名串
-    date = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime('%Y-%m-%d')
-    credential_scope = f'{date}/{service}/tc3_request'
-    hashed_canonical_request = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
-    string_to_sign = f'TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{hashed_canonical_request}'
-
-    # 3. 计算签名
-    def _hmac_sha256(key, msg):
-        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
-
-    secret_date = _hmac_sha256(('TC3' + secret_key).encode('utf-8'), date)
-    secret_service = _hmac_sha256(secret_date, service)
-    secret_signing = _hmac_sha256(secret_service, 'tc3_request')
-    signature = hmac.new(secret_signing, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-
-    # 4. 构建Authorization头
-    authorization = (
-        f'TC3-HMAC-SHA256 '
-        f'Credential={secret_id}/{credential_scope}, '
-        f'SignedHeaders={signed_headers}, '
-        f'Signature={signature}'
-    )
-
-    return {
-        'Authorization': authorization,
-        'Content-Type': 'application/json',
-        'Host': host,
-        'X-TC-Action': endpoint,
-        'X-TC-Version': '2024-05-22',
-        'X-TC-Timestamp': str(timestamp),
-        'X-TC-Region': 'ap-guangzhou',
-    }
-
-
 def _query_tencent_kb(kb_config, exam_type, keywords):
-    """查询腾讯云LKE知识库，返回 (上下文文本, 文档快照列表)
+    """查询腾讯IMA个人知识库，返回 (上下文文本, 文档快照列表)
 
-    使用 RetrieveKnowledge API 进行混合检索。
-    需要腾讯云 SecretId + SecretKey 进行 TC3-HMAC-SHA256 签名认证。
+    使用 IMA OpenAPI 搜索笔记并获取内容。
+    认证方式: ima-openapi-clientid + ima-openapi-apikey 请求头。
     """
-    import time
+    api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['tencent']['api_url'])
+    client_id = kb_config.get('api_key', '') or kb_config.get('client_id', '')
+    api_key = kb_config.get('secret_key', '') or kb_config.get('api_key_secret', '')
 
-    api_key = kb_config.get('api_key', '')
-    secret_key = kb_config.get('secret_key', '')
-    knowledge_base_id = kb_config.get('knowledge_base_id', '') or kb_config.get('bot_id', '')
+    if not client_id or not api_key:
+        raise ValueError('腾讯IMA需要 Client ID 和 API Key，请在知识库配置中填写')
 
-    if not knowledge_base_id:
-        raise ValueError('腾讯知识库 KnowledgeBaseId 为空')
-
-    host = 'lkeap.tencentcloudapi.com'
-    timestamp = int(time.time())
-
-    # 构建请求体 - 使用混合检索 + 相似度阈值
-    payload = {
-        'KnowledgeBaseId': knowledge_base_id,
-        'Query': keywords,
-        'RetrievalMethod': 'HYBRID',
-        'RetrievalSetting': {
-            'TopK': 5,
-            'ScoreThreshold': 0.5,
-        },
+    headers = {
+        'Content-Type': 'application/json',
+        'ima-openapi-clientid': client_id,
+        'ima-openapi-apikey': api_key,
     }
-    payload_str = json.dumps(payload, ensure_ascii=False)
 
-    # 构建签名头
-    if not secret_key:
-        raise ValueError('腾讯知识库需要 SecretId + SecretKey 进行签名认证，请在知识库配置中填写 SecretKey')
-    headers = _build_tc3_signature(
-        api_key, secret_key, 'lkeap', host, 'RetrieveKnowledge',
-        payload_str, timestamp
-    )
-
-    url = f'https://{host}/'
-    resp = requests.post(url, headers=headers, data=payload_str.encode('utf-8'), timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # 解析响应（腾讯云API响应嵌套在Response字段中）
-    response_data = data.get('Response', data)
-
-    # 检查API错误
-    if 'Error' in response_data:
-        err_code = response_data['Error'].get('Code', '')
-        err_msg = response_data['Error'].get('Message', '')
-        if 'not exist' in err_msg.lower():
-            raise ValueError(f'知识库ID不存在，请检查配置。当前ID: {knowledge_base_id}\n请在腾讯云LKE控制台 > 知识库管理中复制正确的KnowledgeBaseId（如: 1840331836752986944）')
-        raise ValueError(f'腾讯知识库API错误 [{err_code}]: {err_msg}')
-
-    records = response_data.get('Records', [])
+    # 从关键词中提取搜索词（去掉模板前缀）
+    search_query = keywords
+    if '疑似疾病' in keywords:
+        # 从KB_QUERY_TEMPLATE中提取疾病名
+        lines = keywords.split('\n')
+        for line in lines:
+            if '疑似疾病' in line:
+                search_query = line.split('：', 1)[-1].strip() if '：' in line else line.split(':', 1)[-1].strip()
+                break
 
     doc_snapshots = []
     context_parts = []
 
-    for r in records:
-        content = r.get('Content', '')
-        if not content:
-            continue
-        context_parts.append(content)
+    # 第一步：按标题搜索笔记
+    search_url = f'{api_url}/note/v1/search_note_book'
+    search_payload = {
+        'search_type': 0,
+        'query_info': {'title': search_query},
+        'start': 0,
+        'end': 10,
+    }
+    resp = requests.post(search_url, headers=headers, json=search_payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
 
-        # 提取文档快照信息
-        metadata = r.get('Metadata', {})
-        doc_name = r.get('Title', '') or r.get('DocName', '') or metadata.get('DocName', '未知文档')
-        page = ''
-        chunk_pages = metadata.get('ChunkPageNumbers', [])
-        if chunk_pages:
-            page = str(chunk_pages[0])
-        snippet = content[:200] + ('...' if len(content) > 200 else '')
+    # 检查API错误
+    if data.get('error_code', 0) != 0:
+        raise ValueError(f'IMA API错误 [{data.get("error_code")}]: {data.get("error_msg", "未知错误")}')
+
+    docs = data.get('data', {}).get('docs', [])
+
+    # 如果标题搜索无结果，尝试按正文搜索
+    if not docs:
+        search_payload['search_type'] = 1
+        search_payload['query_info'] = {'content': search_query}
+        resp = requests.post(search_url, headers=headers, json=search_payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('error_code', 0) != 0:
+            raise ValueError(f'IMA API错误 [{data.get("error_code")}]: {data.get("error_msg", "未知错误")}')
+        docs = data.get('data', {}).get('docs', [])
+
+    # 第二步：获取每篇笔记的详细内容
+    doc_url = f'{api_url}/note/v1/get_doc_content'
+    for doc in docs[:5]:  # 最多获取5篇
+        doc_info = doc.get('doc', {}).get('basic_info', {})
+        doc_id = doc_info.get('docid', '')
+        title = doc_info.get('title', '未知文档')
+        summary = doc_info.get('summary', '')
+
+        if not doc_id:
+            continue
+
+        # 获取笔记内容
+        try:
+            doc_payload = {'doc_id': doc_id, 'target_content_format': 1}  # Markdown格式
+            doc_resp = requests.post(doc_url, headers=headers, json=doc_payload, timeout=15)
+            doc_resp.raise_for_status()
+            doc_data = doc_resp.json()
+
+            if doc_data.get('error_code', 0) == 0:
+                content = doc_data.get('data', {}).get('content', '')
+                if content:
+                    context_parts.append(f'【{title}】\n{content}')
+                    snippet = content[:200] + ('...' if len(content) > 200 else '')
+                else:
+                    context_parts.append(f'【{title}】\n{summary}')
+                    snippet = summary[:200] + ('...' if len(summary) > 200 else '') if summary else ''
+            else:
+                # 获取内容失败，使用摘要
+                if summary:
+                    context_parts.append(f'【{title}】\n{summary}')
+                    snippet = summary[:200] + ('...' if len(summary) > 200 else '')
+                else:
+                    continue
+        except Exception:
+            # 获取内容失败，使用摘要作为降级
+            if summary:
+                context_parts.append(f'【{title}】\n{summary}')
+                snippet = summary[:200] + ('...' if len(summary) > 200 else '')
+            else:
+                continue
 
         doc_snapshots.append({
-            'doc_name': doc_name,
-            'page': page,
+            'doc_name': title,
+            'page': '',
             'snippet': snippet,
-            'url': '',
-            'source': '腾讯知识库',
+            'url': f'ima://note/{doc_id}',
+            'source': '腾讯IMA知识库',
         })
 
-    context = '\n'.join(context_parts)
+    context = '\n\n'.join(context_parts)
     if not context:
-        raise ValueError(f'腾讯知识库返回空结果，原始响应: {json.dumps(data, ensure_ascii=False)[:200]}')
+        raise ValueError(f'IMA知识库未找到与"{search_query}"相关的内容')
 
     return context, doc_snapshots
 
