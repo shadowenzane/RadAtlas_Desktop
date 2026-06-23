@@ -653,22 +653,12 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
     payload_str = json.dumps(payload, ensure_ascii=False)
 
     # 构建签名头
-    if secret_key:
-        # 使用 TC3-HMAC-SHA256 签名
-        headers = _build_tc3_signature(
-            api_key, secret_key, 'lkeap', host, 'RetrieveKnowledge',
-            payload_str, timestamp
-        )
-    else:
-        # 降级：尝试 Bearer 认证（部分接口可能支持）
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}',
-            'X-TC-Action': 'RetrieveKnowledge',
-            'X-TC-Version': '2024-05-22',
-            'X-TC-Region': 'ap-guangzhou',
-            'X-TC-Timestamp': str(timestamp),
-        }
+    if not secret_key:
+        raise ValueError('腾讯知识库需要 SecretId + SecretKey 进行签名认证，请在知识库配置中填写 SecretKey')
+    headers = _build_tc3_signature(
+        api_key, secret_key, 'lkeap', host, 'RetrieveKnowledge',
+        payload_str, timestamp
+    )
 
     url = f'https://{host}/'
     resp = requests.post(url, headers=headers, data=payload_str.encode('utf-8'), timeout=30)
