@@ -1398,17 +1398,25 @@ class _KBConfigDialog(QDialog):
         """
 
         # 腾讯知识库
-        tencent_group = QGroupBox('腾讯知识库')
+        tencent_group = QGroupBox('腾讯知识库 (LKE)')
         tencent_group.setStyleSheet(group_style)
         tencent_layout = QFormLayout(tencent_group)
         tencent_cfg = kb_configs.get('tencent', {})
         self.tencent_api_key = _PasswordLineEdit()
         self.tencent_api_key.setText(tencent_cfg.get('api_key', ''))
-        self.tencent_api_key.setPlaceholderText('腾讯云API Key')
-        tencent_layout.addRow('API Key:', self.tencent_api_key)
-        self.tencent_bot_id = QLineEdit(tencent_cfg.get('bot_id', ''))
-        self.tencent_bot_id.setPlaceholderText('知识库应用ID (BotId)')
-        tencent_layout.addRow('应用ID:', self.tencent_bot_id)
+        self.tencent_api_key.setPlaceholderText('腾讯云 SecretId')
+        tencent_layout.addRow('SecretId:', self.tencent_api_key)
+        self.tencent_secret_key = _PasswordLineEdit()
+        self.tencent_secret_key.setText(tencent_cfg.get('secret_key', ''))
+        self.tencent_secret_key.setPlaceholderText('腾讯云 SecretKey')
+        tencent_layout.addRow('SecretKey:', self.tencent_secret_key)
+        self.tencent_kb_id = QLineEdit(tencent_cfg.get('knowledge_base_id', '') or tencent_cfg.get('bot_id', ''))
+        self.tencent_kb_id.setPlaceholderText('知识库ID (KnowledgeBaseId)')
+        tencent_layout.addRow('知识库ID:', self.tencent_kb_id)
+        tencent_hint = QLabel('使用腾讯云LKE知识引擎 RetrieveKnowledge API。\n需在腾讯云控制台创建知识库获取ID。')
+        tencent_hint.setStyleSheet("color: #666670; font-size: 11px;")
+        tencent_hint.setWordWrap(True)
+        tencent_layout.addRow(tencent_hint)
         tencent_test_btn = QPushButton('测试连接')
         tencent_test_btn.clicked.connect(lambda checked=False: self._test_kb('tencent', tencent_test_btn))
         tencent_layout.addRow('', tencent_test_btn)
@@ -1421,21 +1429,28 @@ class _KBConfigDialog(QDialog):
         volc_cfg = kb_configs.get('volcengine', {})
         self.volc_api_key = _PasswordLineEdit()
         self.volc_api_key.setText(volc_cfg.get('api_key', ''))
-        self.volc_api_key.setPlaceholderText('火山引擎API Key')
+        self.volc_api_key.setPlaceholderText('火山引擎API Key (VIKING_API_KEY)')
         volc_layout.addRow('API Key:', self.volc_api_key)
-        self.volc_endpoint_id = QLineEdit(volc_cfg.get('endpoint_id', ''))
-        self.volc_endpoint_id.setPlaceholderText('推理接入点ID (EndpointId)')
-        volc_layout.addRow('接入点ID:', self.volc_endpoint_id)
+        self.volc_resource_id = QLineEdit(volc_cfg.get('resource_id', ''))
+        self.volc_resource_id.setPlaceholderText('知识库Resource ID (优先使用)')
+        volc_layout.addRow('Resource ID:', self.volc_resource_id)
         self.volc_collection = QLineEdit(volc_cfg.get('collection_name', ''))
-        self.volc_collection.setPlaceholderText('知识库集合名称 (可选)')
+        self.volc_collection.setPlaceholderText('知识库集合名称 (与Resource ID二选一)')
         volc_layout.addRow('集合名称:', self.volc_collection)
+        self.volc_endpoint_id = QLineEdit(volc_cfg.get('endpoint_id', ''))
+        self.volc_endpoint_id.setPlaceholderText('旗舰版知识库ID (可选, 用于Responses API)')
+        volc_layout.addRow('旗舰版ID:', self.volc_endpoint_id)
+        volc_hint = QLabel('优先使用 search_knowledge API (需Resource ID或集合名称)。\n旗舰版知识库可使用 Responses API + knowledge_search 工具。')
+        volc_hint.setStyleSheet("color: #666670; font-size: 11px;")
+        volc_hint.setWordWrap(True)
+        volc_layout.addRow(volc_hint)
         volc_test_btn = QPushButton('测试连接')
         volc_test_btn.clicked.connect(lambda checked=False: self._test_kb('volcengine', volc_test_btn))
         volc_layout.addRow('', volc_test_btn)
         layout.addWidget(volc_group)
 
-        # Google NotebookLM
-        nblm_group = QGroupBox('Google NotebookLM')
+        # Google NotebookLM / Gemini File Search
+        nblm_group = QGroupBox('Google NotebookLM (Gemini File Search)')
         nblm_group.setStyleSheet(group_style)
         nblm_layout = QFormLayout(nblm_group)
         nblm_cfg = kb_configs.get('notebooklm', {})
@@ -1443,10 +1458,10 @@ class _KBConfigDialog(QDialog):
         self.nblm_api_key.setText(nblm_cfg.get('api_key', ''))
         self.nblm_api_key.setPlaceholderText('Google AI Studio API Key')
         nblm_layout.addRow('API Key:', self.nblm_api_key)
-        self.nblm_corpus_id = QLineEdit(nblm_cfg.get('corpus_id', ''))
-        self.nblm_corpus_id.setPlaceholderText('语料库ID (Corpus ID, 可选)')
-        nblm_layout.addRow('语料库ID:', self.nblm_corpus_id)
-        nblm_hint = QLabel('需在 Google AI Studio 获取 API Key。\n无 Corpus ID 时将使用 Google Search 检索。')
+        self.nblm_corpus_id = QLineEdit(nblm_cfg.get('file_search_store', '') or nblm_cfg.get('corpus_id', ''))
+        self.nblm_corpus_id.setPlaceholderText('File Search Store ID (可选)')
+        nblm_layout.addRow('Store ID:', self.nblm_corpus_id)
+        nblm_hint = QLabel('使用 Gemini 2.5 Flash + File Search 工具检索。\n需在 Google AI Studio 获取 API Key。\n无 Store ID 时使用 Google Search 检索网络信息。')
         nblm_hint.setStyleSheet("color: #666670; font-size: 11px;")
         nblm_hint.setWordWrap(True)
         nblm_layout.addRow(nblm_hint)
@@ -1481,20 +1496,22 @@ class _KBConfigDialog(QDialog):
             kb_config = {
                 'type': 'tencent',
                 'api_key': self.tencent_api_key.text().strip(),
-                'bot_id': self.tencent_bot_id.text().strip(),
+                'secret_key': self.tencent_secret_key.text().strip(),
+                'knowledge_base_id': self.tencent_kb_id.text().strip(),
             }
         elif kb_type == 'volcengine':
             kb_config = {
                 'type': 'volcengine',
                 'api_key': self.volc_api_key.text().strip(),
-                'endpoint_id': self.volc_endpoint_id.text().strip(),
+                'resource_id': self.volc_resource_id.text().strip(),
                 'collection_name': self.volc_collection.text().strip(),
+                'endpoint_id': self.volc_endpoint_id.text().strip(),
             }
         elif kb_type == 'notebooklm':
             kb_config = {
                 'type': 'notebooklm',
                 'api_key': self.nblm_api_key.text().strip(),
-                'corpus_id': self.nblm_corpus_id.text().strip(),
+                'file_search_store': self.nblm_corpus_id.text().strip(),
             }
         else:
             return
@@ -1526,18 +1543,20 @@ class _KBConfigDialog(QDialog):
         config['knowledge_bases']['tencent'] = {
             'type': 'tencent',
             'api_key': self.tencent_api_key.text().strip(),
-            'bot_id': self.tencent_bot_id.text().strip(),
+            'secret_key': self.tencent_secret_key.text().strip(),
+            'knowledge_base_id': self.tencent_kb_id.text().strip(),
         }
         config['knowledge_bases']['volcengine'] = {
             'type': 'volcengine',
             'api_key': self.volc_api_key.text().strip(),
-            'endpoint_id': self.volc_endpoint_id.text().strip(),
+            'resource_id': self.volc_resource_id.text().strip(),
             'collection_name': self.volc_collection.text().strip(),
+            'endpoint_id': self.volc_endpoint_id.text().strip(),
         }
         config['knowledge_bases']['notebooklm'] = {
             'type': 'notebooklm',
             'api_key': self.nblm_api_key.text().strip(),
-            'corpus_id': self.nblm_corpus_id.text().strip(),
+            'file_search_store': self.nblm_corpus_id.text().strip(),
         }
         save_config(config)
         QMessageBox.information(self, '成功', '知识库配置已保存')
