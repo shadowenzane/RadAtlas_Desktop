@@ -1230,6 +1230,35 @@ class AIDiagnosisDialog(QDialog):
                 btn.clicked.connect(lambda checked, d=item_data, p=provider_name: self._show_detail(d, p))
                 self.result_list_layout.addWidget(btn)
 
+        # 知识库文档条目
+        if self._kb_docs:
+            kb_title = QLabel('  知识库参考文档')
+            kb_title.setStyleSheet("""
+                color: #f59e0b; font-size: 13px; font-weight: bold;
+                background: rgba(245,158,11,15); border-radius: 4px; padding: 4px 8px;
+                margin-top: 8px;
+            """)
+            self.result_list_layout.addWidget(kb_title)
+
+            for i, doc in enumerate(self._kb_docs):
+                doc_name = doc.get('doc_name', f'文档 #{i+1}')
+                source = doc.get('source', '')
+                page = doc.get('page', '')
+                label_text = f'    {doc_name}'
+                if page:
+                    label_text += f'  [第{page}页]'
+                elif source:
+                    label_text += f'  [{source}]'
+                btn = QPushButton(label_text)
+                btn.setFlat(True)
+                btn.setStyleSheet("""
+                    QPushButton { text-align: left; color: #f0c060; padding: 5px 8px;
+                                  border: none; border-radius: 4px; font-size: 12px; }
+                    QPushButton:hover { background: rgba(245,158,11,25); color: #ffd070; }
+                """)
+                btn.clicked.connect(lambda checked, d=doc: self._show_kb_detail(d))
+                self.result_list_layout.addWidget(btn)
+
         self.result_list_layout.addStretch()
 
     def _show_detail(self, data, provider_name):
@@ -1306,6 +1335,73 @@ class AIDiagnosisDialog(QDialog):
         self.detail_browser.setHtml(html)
         # 发出信号
         self.diagnosis_clicked.emit(data)
+
+    def _show_kb_detail(self, doc):
+        """显示知识库文档快照详情"""
+        doc_name = doc.get('doc_name', '未知文档')
+        page = doc.get('page', '')
+        snippet = doc.get('snippet', '')
+        url = doc.get('url', '')
+        source = doc.get('source', '')
+
+        html = '<div style="font-family: Microsoft YaHei;">'
+        html += '<h3 style="color:#f59e0b; border-bottom:1px solid #2a2a30; padding-bottom:8px;">'
+        html += f'&#128218; {doc_name}</h3>'
+
+        # 元信息表格
+        html += '<div style="margin:12px 0; padding:12px; background:rgba(245,158,11,8); '
+        html += 'border:1px solid rgba(245,158,11,25); border-radius:6px; '
+        html += 'border-left:3px solid #f59e0b;">'
+
+        # 文档名称
+        html += f'<div style="margin-bottom:8px;">'
+        html += f'<span style="color:#888890; font-size:12px; display:inline-block; width:80px;">文档名称</span>'
+        html += f'<span style="color:#f0c060; font-size:13px; font-weight:bold;">{doc_name}</span>'
+        html += '</div>'
+
+        # 来源
+        if source:
+            html += f'<div style="margin-bottom:8px;">'
+            html += f'<span style="color:#888890; font-size:12px; display:inline-block; width:80px;">来源</span>'
+            html += f'<span style="display:inline-block; padding:2px 8px; background:rgba(63,123,247,15); '
+            html += f'color:#5a91ff; border-radius:3px; font-size:11px;">{source}</span>'
+            html += '</div>'
+
+        # 页码/章节
+        if page:
+            html += f'<div style="margin-bottom:8px;">'
+            html += f'<span style="color:#888890; font-size:12px; display:inline-block; width:80px;">页码/位置</span>'
+            html += f'<span style="color:#c0c0c8; font-size:12px;">第 {page} 页</span>'
+            html += '</div>'
+
+        # 链接
+        if url:
+            html += f'<div style="margin-bottom:8px;">'
+            html += f'<span style="color:#888890; font-size:12px; display:inline-block; width:80px;">原文链接</span>'
+            html += f'<a href="{url}" style="color:#3f7bf7; font-size:12px; text-decoration:none;">'
+            html += f'&#128279; {url[:80]}{"..." if len(url) > 80 else ""}</a>'
+            html += '</div>'
+
+        html += '</div>'
+
+        # 内容摘要
+        if snippet:
+            html += '<h4 style="color:#5a91ff; margin-top:16px;">内容摘要</h4>'
+            html += '<div style="color:#c0c0c8; line-height:1.8; padding:12px; '
+            html += 'background:rgba(255,255,255,3); border-radius:6px; '
+            html += 'border-left:3px solid #5a91ff; white-space:pre-wrap;">'
+            html += f'{snippet}</div>'
+
+        # 如果有链接，添加查看原文按钮
+        if url:
+            html += '<div style="margin-top:16px; text-align:center;">'
+            html += f'<a href="{url}" style="display:inline-block; padding:8px 24px; '
+            html += 'background:rgba(63,123,247,20); color:#5a91ff; border-radius:6px; '
+            html += 'text-decoration:none; font-size:13px;">&#128279; 查看原文</a>'
+            html += '</div>'
+
+        html += '</div>'
+        self.detail_browser.setHtml(html)
 
     def _show_kb_config(self, checked=False):
         """显示知识库配置"""
