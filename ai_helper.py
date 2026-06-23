@@ -151,6 +151,146 @@ def save_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+def test_llm_connection(provider, model, api_key, custom_url='', timeout=15):
+    """测试LLM联通性
+
+    Args:
+        provider: 提供商ID (deepseek/doubao/qwen/...)
+        model: 模型名称
+        api_key: API密钥
+        custom_url: 自定义API URL
+        timeout: 超时秒数
+
+    Returns:
+        dict: {'success': bool, 'message': str}
+    """
+    if not api_key:
+        return {'success': False, 'message': 'API Key 为空'}
+
+    if custom_url:
+        api_url = custom_url
+        api_type = 'chat_completions'
+    elif provider in PROVIDERS:
+        api_url = PROVIDERS[provider]['api_url']
+        api_type = PROVIDERS[provider].get('api_type', 'chat_completions')
+    else:
+        return {'success': False, 'message': f'未知提供商: {provider}'}
+
+    try:
+        messages = [
+            {'role': 'user', 'content': '请回复"连接成功"四个字'}
+        ]
+        reply = _call_llm(api_url, api_key, model, messages, api_type=api_type, timeout=timeout)
+        if reply and len(reply) > 0:
+            return {'success': True, 'message': f'连接成功，模型回复: {reply[:50]}'}
+        else:
+            return {'success': False, 'message': '连接成功但返回为空'}
+    except requests.exceptions.Timeout:
+        return {'success': False, 'message': '连接超时，请检查网络或API地址'}
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'message': '无法连接服务器，请检查网络或API地址'}
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response else '未知'
+        error_text = ''
+        try:
+            error_data = e.response.json()
+            error_text = error_data.get('error', {}).get('message', '') or str(error_data)[:100]
+        except Exception:
+            error_text = e.response.text[:100] if e.response else ''
+        return {'success': False, 'message': f'HTTP {status_code}: {error_text}'}
+    except Exception as e:
+        return {'success': False, 'message': f'错误: {str(e)}'}
+
+
+def test_kb_connection(kb_config, timeout=15):
+    """测试知识库联通性
+
+    Args:
+        kb_config: 知识库配置 {'type': ..., 'api_key': ..., ...}
+        timeout: 超时秒数
+
+    Returns:
+        dict: {'success': bool, 'message': str}
+    """
+    kb_type = kb_config.get('type', 'tencent')
+    api_key = kb_config.get('api_key', '')
+
+    if not api_key:
+        return {'success': False, 'message': 'API Key 为空'}
+
+    kb_name = KNOWLEDGE_PROVIDERS.get(kb_type, {}).get('name', kb_type)
+
+    try:
+        if kb_type == 'tencent':
+            bot_id = kb_config.get('bot_id', '')
+            if not bot_id:
+                return {'success': False, 'message': '腾讯知识库 BotId 为空'}
+            api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['tencent']['api_url'])
+            headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+            payload = {'BotId': bot_id, 'Query': '测试', 'TopK': 1}
+            resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            records = data.get('Records', [])
+            return {'success': True, 'message': f'{kb_name}连接成功，返回{len(records)}条记录'}
+
+        elif kb_type == 'volcengine':
+            endpoint_id = kb_config.get('endpoint_id', '')
+            if not endpoint_id:
+                return {'success': False, 'message': '火山方舟 EndpointId 为空'}
+            api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['volcengine']['api_url'])
+            headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+            payload = {
+                'model': endpoint_id,
+                'messages': [{'role': 'user', 'content': '测试'}],
+            }
+            collection_name = kb_config.get('collection_name', '')
+            if collection_name:
+                payload['knowledge'] = {'collection_name': collection_name}
+            resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            return {'success': True, 'message': f'{kb_name}连接成功，返回内容: {content[:50]}'}
+
+        elif kb_type == 'notebooklm':
+            api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['notebooklm']['api_url'])
+            corpus_id = kb_config.get('corpus_id', '')
+            headers = {'Content-Type': 'application/json'}
+            payload = {
+                'contents': [{'parts': [{'text': 'Hello'}]}],
+            }
+            if corpus_id:
+                payload['tools'] = [{'retrieval': {'source': {'corpus': f'corpora/{corpus_id}'}}}]
+            else:
+                payload['tools'] = [{'google_search': {}}]
+            endpoint = f'{api_url}/models/gemini-2.0-flash:generateContent?key={api_key}'
+            resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get('candidates', [])
+            return {'success': True, 'message': f'{kb_name}连接成功，返回{len(candidates)}个候选结果'}
+
+        else:
+            return {'success': False, 'message': f'未知知识库类型: {kb_type}'}
+
+    except requests.exceptions.Timeout:
+        return {'success': False, 'message': f'{kb_name}连接超时，请检查网络'}
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'message': f'{kb_name}无法连接服务器，请检查网络'}
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response else '未知'
+        error_text = ''
+        try:
+            error_data = e.response.json()
+            error_text = error_data.get('error', {}).get('message', '') or str(error_data)[:100]
+        except Exception:
+            error_text = e.response.text[:100] if e.response else ''
+        return {'success': False, 'message': f'{kb_name} HTTP {status_code}: {error_text}'}
+    except Exception as e:
+        return {'success': False, 'message': f'{kb_name}错误: {str(e)}'}
+
+
 def _call_llm(api_url, api_key, model, messages, api_type='chat_completions', timeout=90):
     """调用单个LLM API，返回原始文本
 
@@ -369,18 +509,22 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
         if top_diseases:
             # 用疾病名查询知识库
             kb_query = f'{exam_type} {keywords} ' + ' '.join(top_diseases)
+            kb_error = ''
+            kb_docs = []
             try:
                 kb_context, kb_docs = _query_knowledge_base(
                     use_knowledge_base, exam_type, kb_query
                 )
-            except Exception:
-                kb_docs = []
+            except Exception as e:
+                kb_error = str(e)
 
-            # 将知识库文档附加到所有成功的结果中
-            if kb_docs:
-                for name, result in results.items():
-                    if result.get('success'):
+            # 将知识库文档或错误信息附加到所有成功的结果中
+            for name, result in results.items():
+                if result.get('success'):
+                    if kb_docs:
                         result['kb_docs'] = kb_docs
+                    if kb_error:
+                        result['kb_error'] = kb_error
 
     return results
 

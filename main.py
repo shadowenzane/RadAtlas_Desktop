@@ -46,7 +46,8 @@ from models import (
 )
 from ai_helper import (load_config, save_config, call_ai, PROVIDERS,
                        load_multi_config, call_diagnosis_multi,
-                       KNOWLEDGE_PROVIDERS)
+                       KNOWLEDGE_PROVIDERS,
+                       test_llm_connection, test_kb_connection)
 
 # ── 主题定义 ──────────────────────────────────────────────
 THEMES = {
@@ -872,21 +873,67 @@ class AIConfigDialog(QDialog):
                 model_combo.setCurrentIndex(i)
                 break
 
-        self._provider_rows.append({
+        row = {
             'widget': row_widget,
             'enabled_cb': enabled_cb,
             'provider_combo': provider_combo,
             'model_combo': model_combo,
             'api_key_input': api_key_input,
             'custom_url_input': custom_url_input,
-        })
+        }
+        self._provider_rows.append(row)
         self.config_layout.addWidget(row_widget)
+
+        # 测试按钮
+        test_btn = QPushButton('测试')
+        test_btn.setFixedWidth(50)
+        test_btn.clicked.connect(lambda checked=False, r=row, b=test_btn: self._test_provider(r, b))
+        row_layout.addWidget(test_btn, 1, 3)
 
     def _remove_provider_row(self, widget):
         """删除一行模型配置"""
         self.config_layout.removeWidget(widget)
         self._provider_rows = [r for r in self._provider_rows if r['widget'] != widget]
         widget.deleteLater()
+
+    def _test_provider(self, row, btn):
+        """测试单个LLM提供商联通性"""
+        provider = row['provider_combo'].currentData() or 'deepseek'
+        model = row['model_combo'].currentText() or 'deepseek-chat'
+        api_key = row['api_key_input'].text().strip()
+        custom_url = row['custom_url_input'].text().strip()
+
+        btn.setEnabled(False)
+        btn.setText('测试中...')
+        from PyQt5.QtCore import QThread
+        class _TestWorker(QObject):
+            finished = pyqtSignal(dict)
+            def __init__(self, provider, model, api_key, custom_url):
+                super().__init__()
+                self.provider = provider
+                self.model = model
+                self.api_key = api_key
+                self.custom_url = custom_url
+            def run(self):
+                result = test_llm_connection(self.provider, self.model, self.api_key, self.custom_url)
+                self.finished.emit(result)
+
+        thread = QThread()
+        worker = _TestWorker(provider, model, api_key, custom_url)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        def _on_finished(result):
+            btn.setEnabled(True)
+            btn.setText('测试')
+            if result['success']:
+                QMessageBox.information(self, '测试成功', result['message'])
+            else:
+                QMessageBox.warning(self, '测试失败', result['message'])
+            thread.quit()
+
+        worker.finished.connect(_on_finished)
+        thread.start()
 
     def _save(self, checked=False):
         """保存配置"""
@@ -1112,12 +1159,17 @@ class AIDiagnosisDialog(QDialog):
         # 收集所有知识库文档快照
         self._kb_docs = []
         seen = set()
+        kb_errors = []
         for result in results.values():
             for doc in result.get('kb_docs', []):
                 key = (doc.get('doc_name', ''), doc.get('page', ''), doc.get('snippet', '')[:50])
                 if key not in seen:
                     seen.add(key)
                     self._kb_docs.append(doc)
+            # 收集知识库错误
+            kb_err = result.get('kb_error', '')
+            if kb_err and kb_err not in kb_errors:
+                kb_errors.append(kb_err)
 
         # 检查是否全部失败
         all_failed = all(not r.get('success') for r in results.values())
@@ -1129,9 +1181,26 @@ class AIDiagnosisDialog(QDialog):
             return
 
         success_count = sum(1 for r in results.values() if r.get('success'))
-        kb_info = f'，引用{len(self._kb_docs)}篇文档' if self._kb_docs else ''
+        if self._kb_docs:
+            kb_info = f'，引用{len(self._kb_docs)}篇文档'
+        elif kb_errors:
+            kb_info = f'，知识库查询失败'
+        else:
+            kb_info = ''
         self.status_label.setText(f'查询完成，{success_count}/{len(results)}个模型成功{kb_info}')
-        self.status_label.setStyleSheet("color: #4ade80; font-size: 12px;")
+        self.status_label.setStyleSheet("color: #4ade80; font-size: 12px;" if not kb_errors else "color: #f59e0b; font-size: 12px;")
+
+        # 如果知识库查询失败，显示错误提示
+        if kb_errors and not self._kb_docs:
+            kb_type_name = ''
+            if self.kb_tencent.isChecked():
+                kb_type_name = '腾讯知识库'
+            elif self.kb_volcengine.isChecked():
+                kb_type_name = '火山方舟知识库'
+            elif self.kb_notebooklm.isChecked():
+                kb_type_name = 'Google NotebookLM'
+            QMessageBox.warning(self, '知识库查询失败',
+                f'{kb_type_name}查询失败：\n{kb_errors[0]}\n\n诊断结果仍已显示，但未包含知识库参考文档。')
 
         # 清空结果列表（保留result_list_label）
         while self.result_list_layout.count():
@@ -1324,6 +1393,9 @@ class _KBConfigDialog(QDialog):
         self.tencent_bot_id = QLineEdit(tencent_cfg.get('bot_id', ''))
         self.tencent_bot_id.setPlaceholderText('知识库应用ID (BotId)')
         tencent_layout.addRow('应用ID:', self.tencent_bot_id)
+        tencent_test_btn = QPushButton('测试连接')
+        tencent_test_btn.clicked.connect(lambda checked=False: self._test_kb('tencent', tencent_test_btn))
+        tencent_layout.addRow('', tencent_test_btn)
         layout.addWidget(tencent_group)
 
         # 火山方舟知识库
@@ -1341,6 +1413,9 @@ class _KBConfigDialog(QDialog):
         self.volc_collection = QLineEdit(volc_cfg.get('collection_name', ''))
         self.volc_collection.setPlaceholderText('知识库集合名称 (可选)')
         volc_layout.addRow('集合名称:', self.volc_collection)
+        volc_test_btn = QPushButton('测试连接')
+        volc_test_btn.clicked.connect(lambda checked=False: self._test_kb('volcengine', volc_test_btn))
+        volc_layout.addRow('', volc_test_btn)
         layout.addWidget(volc_group)
 
         # Google NotebookLM
@@ -1359,6 +1434,9 @@ class _KBConfigDialog(QDialog):
         nblm_hint.setStyleSheet("color: #666670; font-size: 11px;")
         nblm_hint.setWordWrap(True)
         nblm_layout.addRow(nblm_hint)
+        nblm_test_btn = QPushButton('测试连接')
+        nblm_test_btn.clicked.connect(lambda checked=False: self._test_kb('notebooklm', nblm_test_btn))
+        nblm_layout.addRow('', nblm_test_btn)
         layout.addWidget(nblm_group)
 
         layout.addSpacing(10)
@@ -1379,6 +1457,60 @@ class _KBConfigDialog(QDialog):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
+
+    def _test_kb(self, kb_type, btn):
+        """测试知识库联通性"""
+        # 从UI收集当前配置
+        if kb_type == 'tencent':
+            kb_config = {
+                'type': 'tencent',
+                'api_key': self.tencent_api_key.text().strip(),
+                'bot_id': self.tencent_bot_id.text().strip(),
+            }
+        elif kb_type == 'volcengine':
+            kb_config = {
+                'type': 'volcengine',
+                'api_key': self.volc_api_key.text().strip(),
+                'endpoint_id': self.volc_endpoint_id.text().strip(),
+                'collection_name': self.volc_collection.text().strip(),
+            }
+        elif kb_type == 'notebooklm':
+            kb_config = {
+                'type': 'notebooklm',
+                'api_key': self.nblm_api_key.text().strip(),
+                'corpus_id': self.nblm_corpus_id.text().strip(),
+            }
+        else:
+            return
+
+        btn.setEnabled(False)
+        btn.setText('测试中...')
+        from PyQt5.QtCore import QThread
+        class _KBTestWorker(QObject):
+            finished = pyqtSignal(dict)
+            def __init__(self, cfg):
+                super().__init__()
+                self.cfg = cfg
+            def run(self):
+                result = test_kb_connection(self.cfg)
+                self.finished.emit(result)
+
+        thread = QThread()
+        worker = _KBTestWorker(kb_config)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        def _on_finished(result):
+            btn.setEnabled(True)
+            btn.setText('测试连接')
+            if result['success']:
+                QMessageBox.information(self, '测试成功', result['message'])
+            else:
+                QMessageBox.warning(self, '测试失败', result['message'])
+            thread.quit()
+
+        worker.finished.connect(_on_finished)
+        thread.start()
 
     def _save(self, checked=False):
         config = load_config()
