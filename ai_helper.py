@@ -1,6 +1,10 @@
 """AI 大模型配置和调用模块"""
 import json
 import os
+import re
+import hashlib
+import hmac
+import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -57,7 +61,7 @@ KNOWLEDGE_PROVIDERS = {
     },
     'volcengine': {
         'name': '火山方舟知识库',
-        'api_url': 'https://api-knowledgebase.ml_platform.cn-beijing.volces.com/api/knowledge/collection/search_knowledge',
+        'api_url': 'https://api-knowledgebase.mlp.cn-beijing.volces.com/api/knowledge/collection/search_knowledge',
         'description': '火山引擎方舟知识库服务',
     },
     'notebooklm': {
@@ -227,7 +231,13 @@ def test_kb_connection(kb_config, timeout=15):
     kb_type = kb_config.get('type', 'tencent')
     api_key = kb_config.get('api_key', '')
 
-    if not api_key:
+    # 火山方舟可能使用AK/SK而非API Key
+    if kb_type == 'volcengine':
+        access_key = kb_config.get('access_key', '') or kb_config.get('ak', '')
+        secret_key = kb_config.get('secret_key', '') or kb_config.get('sk', '')
+        if not api_key and not (access_key and secret_key):
+            return {'success': False, 'message': 'API Key 或 Access Key/Secret Key 为空'}
+    elif not api_key:
         return {'success': False, 'message': 'API Key 为空'}
 
     kb_name = KNOWLEDGE_PROVIDERS.get(kb_type, {}).get('name', kb_type)
@@ -413,32 +423,72 @@ def call_ai(disease_name, config=None):
     return _parse_json_response(content)
 
 
+def _sanitize_disease_name(name):
+    """清理疾病名，去除英文字母和括号内的内容，只保留中文名用于知识库检索
+
+    例如："肺癌（adenocarcinoma）" → "肺癌"
+          "COVID-19肺炎" → "肺炎"
+          "肺结节(AAA)" → "肺结节"
+    """
+    # 去除括号及括号内的内容（中英文括号）
+    cleaned = re.sub(r'[（(][^）)]*[）)]', '', name)
+    # 去除英文字母和连字符
+    cleaned = re.sub(r'[a-zA-Z\-]', '', cleaned)
+    # 去除多余空格和首尾标点
+    cleaned = re.sub(r'\s+', '', cleaned)
+    cleaned = cleaned.strip(' ··--—–')
+    # 如果清理后为空，回退到原始名称
+    return cleaned if cleaned else name
+
+
 def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowledge_base=None):
     """并行调用多个大模型获取影像诊断结果
 
     流程：
-    1. 并行调用各LLM获取诊断结果（不使用知识库）
-    2. 从所有成功结果中提取匹配度最高的1-3个疾病名
-    3. 用这些疾病名查询知识库，获取文档快照
-    4. 将知识库文档附加到结果中
+    1. 若选择大模型：并行调用各LLM获取诊断结果（不使用知识库）
+       从所有成功结果中提取匹配度最高的1-3个疾病名
+       对每个疾病【分别】查询知识库，获取文档快照
+    2. 若未选择大模型但配置了知识库：直接用关键字查询知识库
 
     Args:
         exam_type: 检查类型 (CT/X-Ray/MRI/PET-CT)
         keywords: 关键字
-        selected_providers: 选中的提供商配置列表
+        selected_providers: 选中的提供商配置列表（可为空，为空时直接检索知识库）
         use_knowledge_base: 知识库配置
 
     Returns:
-        dict: {provider_name: {'success': bool, 'data': [...], 'error': str, 'kb_docs': [...]}}
+        dict: {provider_name: {'success': bool, 'data': [...], 'error': str}}
+              特殊键 '_kb_groups': [{'disease': str, 'docs': [...], 'error': str}, ...]  按疾病分别检索的知识库结果
+              特殊键 '_kb_error': str  整体知识库错误信息（若有）
     """
     if not selected_providers:
         providers = load_multi_config()
         selected_providers = [p for p in providers if p.get('enabled') and p.get('api_key')]
 
-    if not selected_providers:
-        raise ValueError('没有可用的AI配置，请先在AI配置中设置API Key')
-
     results = {}
+
+    # ===== 直接知识库检索模式（未选择大模型）=====
+    if not selected_providers:
+        if not (use_knowledge_base and use_knowledge_base.get('api_key')):
+            raise ValueError('没有可用的AI配置，请先选择大模型或配置知识库')
+        kb_groups = []
+        overall_kb_error = ''
+        try:
+            kb_query = KB_QUERY_TEMPLATE.format(
+                exam_type=exam_type,
+                keywords=keywords,
+                diseases=keywords
+            )
+            kb_context, kb_docs = _query_knowledge_base(
+                use_knowledge_base, exam_type, kb_query
+            )
+            kb_groups.append({'disease': keywords, 'docs': kb_docs, 'error': ''})
+        except Exception as e:
+            overall_kb_error = str(e)
+            kb_groups.append({'disease': keywords, 'docs': [], 'error': overall_kb_error})
+        results['_kb_groups'] = kb_groups
+        results['_kb_error'] = overall_kb_error
+        return results
 
     def _query_one(provider_config):
         """查询单个大模型（第一阶段：不使用知识库）"""
@@ -482,12 +532,12 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
                 name = PROVIDERS.get(pc['provider'], {}).get('name', pc['provider'])
                 results[name] = {'success': False, 'data': [], 'error': str(e), 'kb_docs': []}
 
-    # 第二阶段：从成功结果中提取top 1-3疾病名，查询知识库
+    # 第二阶段：对top 1-3疾病【分别】查询知识库
     if use_knowledge_base and use_knowledge_base.get('api_key'):
         # 收集所有成功结果中的疾病名（按置信度排序取前3）
         disease_entries = []
         for result in results.values():
-            if result.get('success') and result.get('data'):
+            if isinstance(result, dict) and result.get('success') and result.get('data'):
                 for item in result['data']:
                     disease_name = item.get('disease_name', '')
                     confidence = item.get('confidence', '')
@@ -498,39 +548,39 @@ def call_diagnosis_multi(exam_type, keywords, selected_providers=None, use_knowl
         conf_order = {'高': 0, '中': 1, '低': 2}
         disease_entries.sort(key=lambda x: conf_order.get(x[1], 3))
 
-        # 去重取前3个疾病名
+        # 去重取前3个疾病名（清理英文字母和括号等特殊字符，只用中文名检索）
         seen_names = set()
         top_diseases = []
         for name, _ in disease_entries:
-            if name not in seen_names:
-                seen_names.add(name)
-                top_diseases.append(name)
+            clean_name = _sanitize_disease_name(name)
+            if clean_name and clean_name not in seen_names:
+                seen_names.add(clean_name)
+                top_diseases.append(clean_name)
             if len(top_diseases) >= 3:
                 break
 
-        if top_diseases:
-            # 用医学专用提示词构建知识库查询
+        # 对每个疾病分别查询知识库
+        kb_groups = []
+        overall_kb_error = ''
+        for disease_name in top_diseases:
             kb_query = KB_QUERY_TEMPLATE.format(
                 exam_type=exam_type,
                 keywords=keywords,
-                diseases='、'.join(top_diseases)
+                diseases=disease_name
             )
-            kb_error = ''
-            kb_docs = []
             try:
                 kb_context, kb_docs = _query_knowledge_base(
                     use_knowledge_base, exam_type, kb_query
                 )
+                kb_groups.append({'disease': disease_name, 'docs': kb_docs, 'error': ''})
             except Exception as e:
-                kb_error = str(e)
+                err_msg = str(e)
+                kb_groups.append({'disease': disease_name, 'docs': [], 'error': err_msg})
+                if not overall_kb_error:
+                    overall_kb_error = err_msg
 
-            # 将知识库文档或错误信息附加到所有成功的结果中
-            for name, result in results.items():
-                if result.get('success'):
-                    if kb_docs:
-                        result['kb_docs'] = kb_docs
-                    if kb_error:
-                        result['kb_error'] = kb_error
+        results['_kb_groups'] = kb_groups
+        results['_kb_error'] = overall_kb_error
 
     return results
 
@@ -559,11 +609,91 @@ def _query_knowledge_base(kb_config, exam_type, keywords):
         raise ValueError(f'未知知识库类型: {kb_type}')
 
 
+def _volc_sign_request(method, path, ak, sk, body, host, service='air', region='cn-beijing'):
+    """生成火山引擎 HMAC-SHA256 签名请求头
+
+    火山方舟知识库 search_knowledge API 要求 HMAC-SHA256 签名认证，
+    不能使用 Bearer Token。此函数实现 SignerV4 签名算法。
+
+    Args:
+        method: HTTP方法 (POST/GET)
+        path: API路径 (如 /api/knowledge/collection/search_knowledge)
+        ak: Access Key ID
+        sk: Secret Access Key
+        body: 请求体字符串 (JSON)
+        host: API主机名
+        service: 服务名 (知识库为 'air')
+        region: 区域 (中国区为 'cn-beijing')
+
+    Returns:
+        dict: 包含签名信息的完整请求头
+    """
+    now = datetime.datetime.utcnow()
+    x_date = now.strftime('%Y%m%dT%H%M%SZ')
+    short_date = now.strftime('%Y%m%d')
+
+    # 计算请求体哈希
+    body_bytes = body.encode('utf-8') if isinstance(body, str) else body
+    payload_hash = hashlib.sha256(body_bytes).hexdigest()
+
+    # 规范化请求头
+    content_type = 'application/json'
+    canonical_headers = (
+        f'content-type:{content_type}\n'
+        f'host:{host}\n'
+        f'x-content-sha256:{payload_hash}\n'
+        f'x-date:{x_date}\n'
+    )
+    signed_headers = 'content-type;host;x-content-sha256;x-date'
+
+    # 构建规范化请求
+    canonical_request = (
+        f'{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
+    )
+
+    # 签名范围
+    credential_scope = f'{short_date}/{region}/{service}/request'
+
+    # 待签名字符串
+    hashed_canonical_request = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
+    string_to_sign = (
+        f'HMAC-SHA256\n{x_date}\n{credential_scope}\n{hashed_canonical_request}'
+    )
+
+    # 派生签名密钥: VOLC+SK → date → region → service → request
+    k_date = hmac.new(('VOLC' + sk).encode('utf-8'), short_date.encode('utf-8'), hashlib.sha256).digest()
+    k_region = hmac.new(k_date, region.encode('utf-8'), hashlib.sha256).digest()
+    k_service = hmac.new(k_region, service.encode('utf-8'), hashlib.sha256).digest()
+    k_signing = hmac.new(k_service, b'request', hashlib.sha256).digest()
+
+    # 计算签名
+    signature = hmac.new(k_signing, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    # 构建Authorization头
+    authorization = (
+        f'HMAC-SHA256 Credential={ak}/{credential_scope}, '
+        f'SignedHeaders={signed_headers}, Signature={signature}'
+    )
+
+    return {
+        'Content-Type': content_type,
+        'Host': host,
+        'X-Content-Sha256': payload_hash,
+        'X-Date': x_date,
+        'Authorization': authorization,
+    }
+
+
 def _query_tencent_kb(kb_config, exam_type, keywords):
     """查询腾讯IMA个人知识库，返回 (上下文文本, 文档快照列表)
 
     使用 IMA OpenAPI 搜索笔记并获取内容。
     认证方式: ima-openapi-clientid + ima-openapi-apikey 请求头。
+
+    多策略检索提高命中率：
+    1. 按标题精确搜索疾病名
+    2. 按正文搜索疾病名
+    3. 按正文搜索"检查类型+疾病名"组合
     """
     api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['tencent']['api_url'])
     client_id = kb_config.get('api_key', '') or kb_config.get('client_id', '')
@@ -581,48 +711,49 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
     # 从关键词中提取搜索词（去掉模板前缀）
     search_query = keywords
     if '疑似疾病' in keywords:
-        # 从KB_QUERY_TEMPLATE中提取疾病名
         lines = keywords.split('\n')
         for line in lines:
             if '疑似疾病' in line:
                 search_query = line.split('：', 1)[-1].strip() if '：' in line else line.split(':', 1)[-1].strip()
                 break
 
+    search_url = f'{api_url}/note/v1/search_note_book'
+
+    def _ima_search(search_type, query_text, start=0, end=20):
+        """执行IMA搜索，返回docs列表"""
+        payload = {
+            'search_type': search_type,
+            'query_info': {'title': query_text} if search_type == 0 else {'content': query_text},
+            'start': start,
+            'end': end,
+        }
+        r = requests.post(search_url, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        d = r.json()
+        if d.get('error_code', 0) != 0:
+            raise ValueError(f'IMA API错误 [{d.get("error_code")}]: {d.get("error_msg", "未知错误")}')
+        return d.get('data', {}).get('docs', [])
+
+    # 多策略搜索：标题 → 正文 → 组合查询
+    docs = _ima_search(0, search_query)  # 策略1: 按标题搜索
+    if not docs:
+        docs = _ima_search(1, search_query)  # 策略2: 按正文搜索
+    if not docs and exam_type:
+        # 策略3: 用"检查类型+搜索词"组合搜索
+        combo_query = f'{exam_type} {search_query}'
+        docs = _ima_search(1, combo_query)
+    if not docs:
+        # 策略4: 提取搜索词中的核心词（去掉修饰语）
+        core_words = re.sub(r'[的了吗呢吧]', '', search_query).strip()
+        if core_words and core_words != search_query:
+            docs = _ima_search(1, core_words)
+
     doc_snapshots = []
     context_parts = []
 
-    # 第一步：按标题搜索笔记
-    search_url = f'{api_url}/note/v1/search_note_book'
-    search_payload = {
-        'search_type': 0,
-        'query_info': {'title': search_query},
-        'start': 0,
-        'end': 10,
-    }
-    resp = requests.post(search_url, headers=headers, json=search_payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # 检查API错误
-    if data.get('error_code', 0) != 0:
-        raise ValueError(f'IMA API错误 [{data.get("error_code")}]: {data.get("error_msg", "未知错误")}')
-
-    docs = data.get('data', {}).get('docs', [])
-
-    # 如果标题搜索无结果，尝试按正文搜索
-    if not docs:
-        search_payload['search_type'] = 1
-        search_payload['query_info'] = {'content': search_query}
-        resp = requests.post(search_url, headers=headers, json=search_payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get('error_code', 0) != 0:
-            raise ValueError(f'IMA API错误 [{data.get("error_code")}]: {data.get("error_msg", "未知错误")}')
-        docs = data.get('data', {}).get('docs', [])
-
-    # 第二步：获取每篇笔记的详细内容
+    # 获取每篇笔记的详细内容
     doc_url = f'{api_url}/note/v1/get_doc_content'
-    for doc in docs[:5]:  # 最多获取5篇
+    for doc in docs[:8]:  # 增加到8篇
         doc_info = doc.get('doc', {}).get('basic_info', {})
         doc_id = doc_info.get('docid', '')
         title = doc_info.get('title', '未知文档')
@@ -631,7 +762,7 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
         if not doc_id:
             continue
 
-        # 获取笔记内容
+        snippet = ''
         try:
             doc_payload = {'doc_id': doc_id, 'target_content_format': 1}  # Markdown格式
             doc_resp = requests.post(doc_url, headers=headers, json=doc_payload, timeout=15)
@@ -642,32 +773,26 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
                 content = doc_data.get('data', {}).get('content', '')
                 if content:
                     context_parts.append(f'【{title}】\n{content}')
-                    snippet = content[:200] + ('...' if len(content) > 200 else '')
-                else:
+                    snippet = content[:300] + ('...' if len(content) > 300 else '')
+                elif summary:
                     context_parts.append(f'【{title}】\n{summary}')
-                    snippet = summary[:200] + ('...' if len(summary) > 200 else '') if summary else ''
-            else:
-                # 获取内容失败，使用摘要
-                if summary:
-                    context_parts.append(f'【{title}】\n{summary}')
-                    snippet = summary[:200] + ('...' if len(summary) > 200 else '')
-                else:
-                    continue
+                    snippet = summary[:300] + ('...' if len(summary) > 300 else '')
+            elif summary:
+                context_parts.append(f'【{title}】\n{summary}')
+                snippet = summary[:300] + ('...' if len(summary) > 300 else '')
         except Exception:
-            # 获取内容失败，使用摘要作为降级
             if summary:
                 context_parts.append(f'【{title}】\n{summary}')
-                snippet = summary[:200] + ('...' if len(summary) > 200 else '')
-            else:
-                continue
+                snippet = summary[:300] + ('...' if len(summary) > 300 else '')
 
-        doc_snapshots.append({
-            'doc_name': title,
-            'page': '',
-            'snippet': snippet,
-            'url': f'ima://note/{doc_id}',
-            'source': '腾讯IMA知识库',
-        })
+        if snippet:
+            doc_snapshots.append({
+                'doc_name': title,
+                'page': '',
+                'snippet': snippet,
+                'url': f'ima://note/{doc_id}',
+                'source': '腾讯IMA知识库',
+            })
 
     context = '\n\n'.join(context_parts)
     if not context:
@@ -679,93 +804,111 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
 def _query_volcengine_kb(kb_config, exam_type, keywords):
     """查询火山方舟知识库，返回 (上下文文本, 文档快照列表)
 
-    使用 search_knowledge API 进行混合检索 + 重排序 + 上下文扩散。
-    支持两种认证方式：
-    1. Bearer Token (VIKING_API_KEY)
-    2. 通过 resource_id 或 collection name 指定知识库
+    自动选择检索模式：
+    1. search_knowledge API（需AK/SK + Resource ID或集合名称）— HMAC-SHA256签名认证，混合检索+重排序
+    2. Responses API + knowledge_search 工具（需API Key + Endpoint ID）— Bearer认证，旗舰版知识库
     """
-    api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['volcengine']['api_url'])
     api_key = kb_config.get('api_key', '')
+    access_key = kb_config.get('access_key', '') or kb_config.get('ak', '')
+    secret_key = kb_config.get('secret_key', '') or kb_config.get('sk', '')
     endpoint_id = kb_config.get('endpoint_id', '')
     collection_name = kb_config.get('collection_name', '')
     resource_id = kb_config.get('resource_id', '')
 
-    # resource_id 或 collection_name 至少需要一个
-    if not resource_id and not collection_name:
-        # 降级：如果有 endpoint_id，使用 Responses API + knowledge_search 工具
-        if endpoint_id:
-            return _query_volcengine_responses_kb(kb_config, exam_type, keywords)
-        raise ValueError('火山方舟知识库 resource_id 或 collection_name 为空')
+    # 判断可用模式
+    can_search = bool(access_key and secret_key and (resource_id or collection_name))
+    can_responses = bool(api_key and endpoint_id)
 
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}',
-    }
+    if can_search:
+        return _query_volcengine_search_kb(kb_config, exam_type, keywords)
+    elif can_responses:
+        return _query_volcengine_responses_kb(kb_config, exam_type, keywords)
+    else:
+        raise ValueError(
+            '火山方舟知识库配置不完整。需要以下任一组合：\n'
+            '1. search_knowledge模式：Access Key + Secret Key + (Resource ID 或 集合名称)\n'
+            '2. Responses API模式：API Key + 旗舰版知识库ID(Endpoint ID)'
+        )
 
-    # 构建检索请求 - 使用混合检索 + 重排序 + 上下文扩散
+
+def _query_volcengine_search_kb(kb_config, exam_type, keywords):
+    """使用 search_knowledge API 查询火山方舟知识库（HMAC-SHA256签名认证）
+
+    混合检索 + 重排序 + 上下文扩散，检索精度高。
+    """
+    access_key = kb_config.get('access_key', '') or kb_config.get('ak', '')
+    secret_key = kb_config.get('secret_key', '') or kb_config.get('sk', '')
+    collection_name = kb_config.get('collection_name', '')
+    resource_id = kb_config.get('resource_id', '')
+
+    host = 'api-knowledgebase.mlp.cn-beijing.volces.com'
+    path = '/api/knowledge/collection/search_knowledge'
+    url = f'https://{host}{path}'
+
+    # 构建检索请求 - 优化参数提高命中率
     payload = {
         'query': keywords,
         'limit': 5,
         'query_param': {
-            'dense_weight': 0.5,  # 混合检索：0.5=语义+字面均衡
-            'pre_processing': {
-                'need_instruction': True,
-                'rewrite': False,
-                'return_token_usage': False,
-                'messages': [],
-            },
+            'dense_weight': 0.6,  # 偏向语义检索，适合医学术语匹配
         },
         'post_processing': {
-            'rerank_switch': True,  # 开启重排序
-            'retrieve_count': 25,   # 进入重排的候选数量
-            'chunk_diffusion_count': 2,  # 返回上下文相邻切片
-            'chunk_group': True,   # 文本聚合排序
+            'rerank_switch': True,       # 开启重排序
+            'retrieve_count': 25,        # 进入重排的候选数量
+            'chunk_diffusion_count': 1,  # 返回上下文相邻切片
+            'chunk_group': True,         # 文本聚合排序，保持语序
             'rerank_model': 'm3-v2-rerank',
-            'rerank_only_chunk': False,
+            'rerank_only_chunk': False,  # 根据title+内容一起计算排序分
             'get_attachment_link': True,
         },
     }
 
-    # 指定知识库：优先使用 resource_id
     if resource_id:
         payload['resource_id'] = resource_id
     if collection_name:
         payload['name'] = collection_name
         payload['project'] = 'default'
 
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=30)
+    body = json.dumps(payload, ensure_ascii=False)
+
+    # 生成HMAC-SHA256签名请求头
+    headers = _volc_sign_request('POST', path, access_key, secret_key, body, host)
+
+    resp = requests.post(url, headers=headers, data=body.encode('utf-8'), timeout=30)
     resp.raise_for_status()
     data = resp.json()
 
-    # 解析检索结果
+    # 解析检索结果（响应格式: data.result_list）
     doc_snapshots = []
     context_parts = []
 
-    # search_knowledge 返回结果在 chunks 或 documents 字段中
-    chunks = data.get('chunks', []) or data.get('documents', []) or data.get('result', [])
+    result_list = data.get('data', {}).get('result_list', [])
+    if not result_list:
+        result_list = data.get('result_list', []) or data.get('chunks', []) or data.get('documents', [])
 
-    for c in chunks:
+    for c in result_list:
         content = c.get('content', '') or c.get('text', '') or c.get('chunk_content', '')
         if not content:
             continue
         context_parts.append(content)
 
-        doc_name = c.get('doc_name', '') or c.get('title', '') or c.get('filename', '') or c.get('document_name', '未知文档')
-        page = str(c.get('page', '') or c.get('page_num', '') or c.get('chunk_page', ''))
-        url = c.get('url', '') or c.get('doc_url', '') or c.get('attachment_link', '') or c.get('reference_link', '')
-        snippet = content[:200] + ('...' if len(content) > 200 else '')
+        doc_name = (c.get('chunk_title', '') or c.get('doc_name', '') or
+                    c.get('title', '') or c.get('filename', '') or '未知文档')
+        page = str(c.get('chunk_id', '') or c.get('page', '') or c.get('page_num', ''))
+        doc_url = c.get('attachment_link', '') or c.get('url', '') or c.get('doc_url', '')
+        snippet = content[:300] + ('...' if len(content) > 300 else '')
 
         doc_snapshots.append({
             'doc_name': doc_name,
             'page': page,
             'snippet': snippet,
-            'url': url,
+            'url': doc_url,
             'source': '火山方舟知识库',
         })
 
     context = '\n'.join(context_parts)
     if not context:
-        raise ValueError(f'火山方舟知识库返回空结果，原始响应: {json.dumps(data, ensure_ascii=False)[:200]}')
+        raise ValueError(f'火山方舟知识库返回空结果，原始响应: {json.dumps(data, ensure_ascii=False)[:300]}')
 
     return context, doc_snapshots
 
@@ -893,7 +1036,7 @@ def _query_notebooklm_kb(kb_config, exam_type, keywords):
         # 模式1：使用 File Search Store 检索自有文档
         store_name = file_search_store
         if not store_name.startswith('fileSearchStores/'):
-            store_name = f'fileSearchStores/{store_search_store}'
+            store_name = f'fileSearchStores/{file_search_store}'
         payload['tools'] = [
             {
                 'fileSearch': {

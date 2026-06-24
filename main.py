@@ -1049,6 +1049,11 @@ class AIDiagnosisDialog(QDialog):
         self.kb_config_btn.setFixedWidth(90)
         self.kb_config_btn.clicked.connect(self._show_kb_config)
         kb_layout.addWidget(self.kb_config_btn)
+        self.help_btn = QPushButton('帮助')
+        self.help_btn.setObjectName('mutedBtn')
+        self.help_btn.setFixedWidth(60)
+        self.help_btn.clicked.connect(self._show_help)
+        kb_layout.addWidget(self.help_btn)
         kb_layout.addStretch()
         param_layout.addLayout(kb_layout, 2, 1, 1, 5)
 
@@ -1111,9 +1116,6 @@ class AIDiagnosisDialog(QDialog):
 
         # 获取选中的大模型
         selected = [cb.property('provider_config') for cb in self.model_checks if cb.isChecked()]
-        if not selected:
-            QMessageBox.warning(self, '提示', '请至少选择一个大模型')
-            return
 
         # 获取知识库配置
         kb_config = None
@@ -1123,6 +1125,12 @@ class AIDiagnosisDialog(QDialog):
             kb_config = self._load_kb_config('volcengine')
         elif self.kb_notebooklm.isChecked():
             kb_config = self._load_kb_config('notebooklm')
+
+        # 未选择大模型时，必须配置并选择知识库（支持直接知识库检索）
+        if not selected:
+            if not kb_config or not kb_config.get('api_key'):
+                QMessageBox.warning(self, '提示', '请至少选择一个大模型，或选择并配置知识库后进行直接检索')
+                return
 
         exam_type = self.exam_combo.currentText()
         self.query_btn.setEnabled(False)
@@ -1143,38 +1151,53 @@ class AIDiagnosisDialog(QDialog):
         self.query_btn.setEnabled(True)
         self._results = results
 
-        # 收集所有知识库文档快照
+        # 提取按疾病分别检索的知识库结果
+        self._kb_groups = results.pop('_kb_groups', [])
+        kb_error = results.pop('_kb_error', '')
+
+        # 收集所有知识库文档快照（用于在诊断详情中显示）
         self._kb_docs = []
         seen = set()
-        kb_errors = []
-        for result in results.values():
-            for doc in result.get('kb_docs', []):
+        for group in self._kb_groups:
+            for doc in group.get('docs', []):
                 key = (doc.get('doc_name', ''), doc.get('page', ''), doc.get('snippet', '')[:50])
                 if key not in seen:
                     seen.add(key)
                     self._kb_docs.append(doc)
-            # 收集知识库错误
-            kb_err = result.get('kb_error', '')
-            if kb_err and kb_err not in kb_errors:
-                kb_errors.append(kb_err)
+        kb_errors = [kb_error] if kb_error else []
+
+        # 区分大模型结果与纯知识库检索模式
+        provider_results = {k: v for k, v in results.items() if not k.startswith('_')}
+        has_llm_results = len(provider_results) > 0
 
         # 检查是否全部失败
-        all_failed = all(not r.get('success') for r in results.values())
+        if has_llm_results:
+            all_failed = all(not r.get('success') for r in provider_results.values())
+        else:
+            all_failed = not self._kb_docs
+
         if all_failed:
             self.status_label.setText('查询失败')
             self.status_label.setStyleSheet("color: #e64a3a; font-size: 12px;")
-            errors = '\n'.join(f'{k}: {v.get("error", "未知错误")}' for k, v in results.items())
-            QMessageBox.warning(self, '查询失败', f'所有大模型查询均失败：\n{errors}')
+            if has_llm_results:
+                errors = '\n'.join(f'{k}: {v.get("error", "未知错误")}' for k, v in provider_results.items())
+                msg = f'所有大模型查询均失败：\n{errors}'
+            else:
+                msg = f'知识库查询失败：\n{kb_error or "未知错误"}'
+            QMessageBox.warning(self, '查询失败', msg)
             return
 
-        success_count = sum(1 for r in results.values() if r.get('success'))
+        success_count = sum(1 for r in provider_results.values() if r.get('success'))
         if self._kb_docs:
             kb_info = f'，引用{len(self._kb_docs)}篇文档'
         elif kb_errors:
             kb_info = f'，知识库查询失败'
         else:
             kb_info = ''
-        self.status_label.setText(f'查询完成，{success_count}/{len(results)}个模型成功{kb_info}')
+        if has_llm_results:
+            self.status_label.setText(f'查询完成，{success_count}/{len(provider_results)}个模型成功{kb_info}')
+        else:
+            self.status_label.setText(f'知识库检索完成，引用{len(self._kb_docs)}篇文档')
         self.status_label.setStyleSheet("color: #4ade80; font-size: 12px;" if not kb_errors else "color: #f59e0b; font-size: 12px;")
 
         # 如果知识库查询失败，显示错误提示
@@ -1199,7 +1222,7 @@ class AIDiagnosisDialog(QDialog):
         self.result_list_layout.addWidget(self.result_list_label)
 
         # 按大模型分列显示结果
-        for provider_name, result in results.items():
+        for provider_name, result in provider_results.items():
             # 模型标题
             title = QLabel(f'  {provider_name}')
             title.setStyleSheet("""
@@ -1230,9 +1253,9 @@ class AIDiagnosisDialog(QDialog):
                 btn.clicked.connect(lambda checked, d=item_data, p=provider_name: self._show_detail(d, p))
                 self.result_list_layout.addWidget(btn)
 
-        # 知识库文档条目
-        if self._kb_docs:
-            kb_title = QLabel('  知识库参考文档')
+        # 知识库文档条目（按疾病分别检索，分组显示）
+        if self._kb_groups:
+            kb_title = QLabel('  知识库参考文档（按疾病分别检索）')
             kb_title.setStyleSheet("""
                 color: #f59e0b; font-size: 13px; font-weight: bold;
                 background: rgba(245,158,11,15); border-radius: 4px; padding: 4px 8px;
@@ -1240,24 +1263,41 @@ class AIDiagnosisDialog(QDialog):
             """)
             self.result_list_layout.addWidget(kb_title)
 
-            for i, doc in enumerate(self._kb_docs):
-                doc_name = doc.get('doc_name', f'文档 #{i+1}')
-                source = doc.get('source', '')
-                page = doc.get('page', '')
-                label_text = f'    {doc_name}'
-                if page:
-                    label_text += f'  [第{page}页]'
-                elif source:
-                    label_text += f'  [{source}]'
-                btn = QPushButton(label_text)
-                btn.setFlat(True)
-                btn.setStyleSheet("""
-                    QPushButton { text-align: left; color: #f0c060; padding: 5px 8px;
-                                  border: none; border-radius: 4px; font-size: 12px; }
-                    QPushButton:hover { background: rgba(245,158,11,25); color: #ffd070; }
-                """)
-                btn.clicked.connect(lambda checked, d=doc: self._show_kb_detail(d))
-                self.result_list_layout.addWidget(btn)
+            for group in self._kb_groups:
+                disease_name = group.get('disease', '')
+                docs = group.get('docs', [])
+                group_err = group.get('error', '')
+
+                # 疾病分组标题
+                group_label = QLabel(f'    ─ {disease_name}')
+                group_label.setStyleSheet("color: #f59e0b; font-size: 12px; font-weight: bold; padding: 4px 8px;")
+                self.result_list_layout.addWidget(group_label)
+
+                if group_err and not docs:
+                    err_label = QLabel(f'        检索失败: {group_err[:80]}')
+                    err_label.setStyleSheet("color: #e64a3a; font-size: 11px; padding: 2px 8px;")
+                    err_label.setWordWrap(True)
+                    self.result_list_layout.addWidget(err_label)
+                    continue
+
+                for i, doc in enumerate(docs):
+                    doc_name = doc.get('doc_name', f'文档 #{i+1}')
+                    source = doc.get('source', '')
+                    page = doc.get('page', '')
+                    label_text = f'        {doc_name}'
+                    if page:
+                        label_text += f'  [第{page}页]'
+                    elif source:
+                        label_text += f'  [{source}]'
+                    btn = QPushButton(label_text)
+                    btn.setFlat(True)
+                    btn.setStyleSheet("""
+                        QPushButton { text-align: left; color: #f0c060; padding: 5px 8px;
+                                      border: none; border-radius: 4px; font-size: 12px; }
+                        QPushButton:hover { background: rgba(245,158,11,25); color: #ffd070; }
+                    """)
+                    btn.clicked.connect(lambda checked, d=doc: self._show_kb_detail(d))
+                    self.result_list_layout.addWidget(btn)
 
         self.result_list_layout.addStretch()
 
@@ -1409,6 +1449,11 @@ class AIDiagnosisDialog(QDialog):
         if dlg.exec_() == QDialog.Accepted:
             pass
 
+    def _show_help(self, checked=False):
+        """显示帮助文档"""
+        dlg = _HelpDialog(self)
+        dlg.exec_()
+
     def _load_kb_config(self, kb_type):
         """加载知识库配置"""
         config = load_config()
@@ -1468,6 +1513,178 @@ class _DiagnosisWorker(QObject):
             self.finished.emit({'错误': {'success': False, 'data': [], 'error': str(e)}})
 
 
+class _HelpDialog(QDialog):
+    """帮助文档对话框 - LLM与知识库配置说明"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('帮助文档 - 配置说明')
+        self.setMinimumSize(720, 640)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setStyleSheet("""
+            QTextBrowser { background: #1a1a1e; border: none;
+                          color: #d0d0d4; padding: 16px; font-size: 13px; }
+        """)
+        browser.setHtml(self._build_html())
+        layout.addWidget(browser)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton('关闭')
+        close_btn.setObjectName('mutedBtn')
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _build_html(self):
+        return """<div style="font-family: Microsoft YaHei; line-height: 1.8;">
+
+<h2 style="color:#3f7bf7; border-bottom:2px solid #3f7bf7; padding-bottom:8px;">RadAtlas 配置帮助文档</h2>
+
+<p style="color:#888890;">本文档详细介绍各家大模型(LLM)和知识库的配置流程及方法。</p>
+
+<!-- ==================== LLM 配置 ==================== -->
+<h2 style="color:#f59e0b; margin-top:24px;">一、大模型(LLM)配置</h2>
+<p style="color:#c0c0c8;">在"AI配置"对话框中可添加多个大模型。支持同时选择多个模型并行查询，系统默认选中前2个已配置的模型。</p>
+
+<h3 style="color:#5a91ff; margin-top:16px;">1. DeepSeek</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://api.deepseek.com/v1/chat/completions</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://platform.deepseek.com/api_keys" style="color:#3f7bf7;">https://platform.deepseek.com/api_keys</a></td></tr>
+<tr><td style="color:#888890;">可用模型</td><td>deepseek-chat (通用对话), deepseek-reasoner (推理模型)</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>注册DeepSeek账号 → 创建API Key → 填入AI配置</td></tr>
+<tr><td style="color:#888890;">费用</td><td>输入￥2/百万Token，输出￥8/百万Token（价格仅供参考）</td></tr>
+</table>
+
+<h3 style="color:#5a91ff; margin-top:16px;">2. 豆包(火山引擎)</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://ark.cn-beijing.volces.com/api/v3/responses</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
+<tr><td style="color:#888890;">可用模型</td><td>doubao-seed-2-0-pro, doubao-seed-1-6, doubao-1-5-pro-32k 等</td></tr>
+<tr><td style="color:#888890;">备注</td><td>模型名称也可填入火山方舟的Endpoint ID（如 ep-xxxxxxxx）</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>注册火山引擎账号 → 开通方舟大模型服务 → 创建API Key → 填入AI配置</td></tr>
+</table>
+
+<h3 style="color:#5a91ff; margin-top:16px;">3. OpenAI</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://api.openai.com/v1/chat/completions</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://platform.openai.com/api-keys" style="color:#3f7bf7;">https://platform.openai.com/api-keys</a></td></tr>
+<tr><td style="color:#888890;">可用模型</td><td>gpt-4o, gpt-4o-mini, gpt-3.5-turbo</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>注册OpenAI账号 → 创建API Key → 填入AI配置（需支持海外网络访问）</td></tr>
+</table>
+
+<h3 style="color:#5a91ff; margin-top:16px;">4. 智谱AI</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://open.bigmodel.cn/api/paas/v4/chat/completions</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://open.bigmodel.cn/" style="color:#3f7bf7;">https://open.bigmodel.cn/</a></td></tr>
+<tr><td style="color:#888890;">可用模型</td><td>glm-4-plus, glm-4-flash (免费), glm-4</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>注册智谱AI开放平台 → 创建API Key → 填入AI配置</td></tr>
+</table>
+
+<h3 style="color:#5a91ff; margin-top:16px;">5. 通义千问</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://dashscope.console.aliyun.com/" style="color:#3f7bf7;">https://dashscope.console.aliyun.com/</a></td></tr>
+<tr><td style="color:#888890;">可用模型</td><td>qwen-max, qwen-plus, qwen-turbo</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>注册阿里云账号 → 开通DashScope → 创建API Key → 填入AI配置</td></tr>
+</table>
+
+<p style="color:#888890; font-size:12px; margin-top:8px;">提示：模型名称输入框可编辑，支持手动输入自定义模型名称。可使用"测试连接"按钮验证配置是否正确。</p>
+
+<!-- ==================== 知识库配置 ==================== -->
+<h2 style="color:#f59e0b; margin-top:24px;">二、知识库配置</h2>
+<p style="color:#c0c0c8;">知识库用于检索医学影像诊断相关文档。支持三种知识库，每次查询选择一个。可单独使用知识库检索（不选大模型），也可与大模型配合使用。</p>
+
+<h3 style="color:#5a91ff; margin-top:16px;">1. 腾讯IMA知识库</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://ima.qq.com/openapi</td></tr>
+<tr><td style="color:#888890;">认证方式</td><td>请求头认证：ima-openapi-clientid + ima-openapi-apikey</td></tr>
+<tr><td style="color:#888890;">获取凭证</td><td><a href="https://ima.qq.com/agent-interface" style="color:#3f7bf7;">https://ima.qq.com/agent-interface</a></td></tr>
+<tr><td style="color:#888890;">需要填写</td><td>Client ID 和 API Key（两个都要填）</td></tr>
+<tr><td style="color:#888890;">检索方式</td><td>先按标题搜索笔记，无结果时按正文搜索，最多获取5篇笔记内容</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>访问IMA开放平台 → 登录并创建凭证 → 获取Client ID和API Key → 填入知识库配置</td></tr>
+</table>
+<p style="color:#888890; font-size:12px;">说明：IMA个人知识库中需提前导入医学影像诊断相关笔记/文档，检索结果取决于知识库内容。</p>
+
+<h3 style="color:#5a91ff; margin-top:16px;">2. 火山方舟知识库</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://api-knowledgebase.mlp.cn-beijing.volces.com/api/knowledge/collection/search_knowledge</td></tr>
+<tr><td style="color:#888890;">认证方式</td><td>模式1: HMAC-SHA256签名(AK/SK) &nbsp;|&nbsp; 模式2: Bearer Token (API Key)</td></tr>
+<tr><td style="color:#888890;">获取AK/SK</td><td><a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">https://console.volcengine.com/iam/keymanage</a> → 密钥管理</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
+</table>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式（可同时配置，优先使用模式1）：</b></p>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。HMAC-SHA256签名认证，支持混合检索+重排序+上下文扩散，检索精度更高。</li>
+<li><b>模式2 Responses API</b>：需填写 API Key + 旗舰版知识库ID(Endpoint ID)。Bearer Token认证，通过大模型自动调用知识库。</li>
+</ul>
+<p style="color:#888890; font-size:12px;">配置步骤：注册火山引擎 → 获取AK/SK（IAM密钥管理） → 开通方舟知识库服务 → 创建知识库并上传文档 → 获取Resource ID → 填入知识库配置</p>
+
+<h3 style="color:#5a91ff; margin-top:16px;">3. Google NotebookLM (Gemini File Search)</h3>
+<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
+<tr><td style="color:#888890;">API地址</td><td>https://generativelanguage.googleapis.com/v1beta</td></tr>
+<tr><td style="color:#888890;">认证方式</td><td>x-goog-api-key 请求头</td></tr>
+<tr><td style="color:#888890;">获取API Key</td><td><a href="https://aistudio.google.com/apikey" style="color:#3f7bf7;">https://aistudio.google.com/apikey</a></td></tr>
+<tr><td style="color:#888890;">需要填写</td><td>API Key（必填）+ File Search Store ID（可选）</td></tr>
+<tr><td style="color:#888890;">使用模型</td><td>gemini-2.5-flash</td></tr>
+</table>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式：</b></p>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li><b>File Search Store</b>：填写 Store ID，检索自有上传文档（需在Google AI Studio中创建File Search Store并上传文档）。</li>
+<li><b>Google Search</b>：不填 Store ID，自动降级为Google网络搜索（检索公开网络信息）。</li>
+</ul>
+<p style="color:#888890; font-size:12px;">配置步骤：访问Google AI Studio → 创建API Key → （可选）创建File Search Store并上传文档 → 填入知识库配置（需支持海外网络访问）</p>
+
+<!-- ==================== 使用说明 ==================== -->
+<h2 style="color:#f59e0b; margin-top:24px;">三、使用说明</h2>
+
+<h3 style="color:#5a91ff; margin-top:16px;">1. 大模型 + 知识库联合检索（推荐）</h3>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>选择1-2个大模型（默认选中前2个已配置的模型）</li>
+<li>选择1个知识库</li>
+<li>输入检查类型和关键征象，点击"开始查询"</li>
+<li>系统先并行调用大模型获取诊断结果</li>
+<li>从诊断结果中提取匹配度最高的1-3个疾病名</li>
+<li>对每个疾病<b>分别</b>查询知识库，获取相关文档</li>
+<li>知识库文档按疾病分组显示在诊断条目下方</li>
+</ol>
+
+<h3 style="color:#5a91ff; margin-top:16px;">2. 单独知识库检索</h3>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>不选择任何大模型</li>
+<li>选择1个已配置的知识库</li>
+<li>输入关键字，点击"开始查询"</li>
+<li>系统直接用关键字检索知识库，返回匹配文档</li>
+</ol>
+
+<h3 style="color:#5a91ff; margin-top:16px;">3. 知识库文档查看</h3>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li>点击左侧知识库文档条目，右侧显示文档快照详情</li>
+<li>详情包含：文档名称、来源、页码、原文链接、内容摘要</li>
+<li>点击"查看原文"链接可跳转到原始文档</li>
+</ul>
+
+<h3 style="color:#5a91ff; margin-top:16px;">4. 联通测试</h3>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li>在AI配置和知识库配置对话框中，每个配置项都有"测试连接"按钮</li>
+<li>点击后会向对应服务发送测试请求，验证配置是否正确</li>
+<li>测试期间请保持网络畅通</li>
+</ul>
+
+<p style="color:#666670; font-size:11px; margin-top:24px; border-top:1px solid #2a2a30; padding-top:12px;">
+提示：所有API Key和密码输入框右侧都有眼睛图标，点击可查看输入内容，不输入时自动隐藏。
+</p>
+
+</div>"""
+
+
 class _KBConfigDialog(QDialog):
     """知识库配置对话框"""
     def __init__(self, parent=None):
@@ -1522,8 +1739,16 @@ class _KBConfigDialog(QDialog):
         volc_cfg = kb_configs.get('volcengine', {})
         self.volc_api_key = _PasswordLineEdit()
         self.volc_api_key.setText(volc_cfg.get('api_key', ''))
-        self.volc_api_key.setPlaceholderText('火山引擎API Key (VIKING_API_KEY)')
+        self.volc_api_key.setPlaceholderText('API Key (用于Responses API模式)')
         volc_layout.addRow('API Key:', self.volc_api_key)
+        self.volc_access_key = _PasswordLineEdit()
+        self.volc_access_key.setText(volc_cfg.get('access_key', '') or volc_cfg.get('ak', ''))
+        self.volc_access_key.setPlaceholderText('Access Key ID (用于search_knowledge模式)')
+        volc_layout.addRow('Access Key:', self.volc_access_key)
+        self.volc_secret_key = _PasswordLineEdit()
+        self.volc_secret_key.setText(volc_cfg.get('secret_key', '') or volc_cfg.get('sk', ''))
+        self.volc_secret_key.setPlaceholderText('Secret Access Key (用于search_knowledge模式)')
+        volc_layout.addRow('Secret Key:', self.volc_secret_key)
         self.volc_resource_id = QLineEdit(volc_cfg.get('resource_id', ''))
         self.volc_resource_id.setPlaceholderText('知识库Resource ID (优先使用)')
         volc_layout.addRow('Resource ID:', self.volc_resource_id)
@@ -1533,7 +1758,9 @@ class _KBConfigDialog(QDialog):
         self.volc_endpoint_id = QLineEdit(volc_cfg.get('endpoint_id', ''))
         self.volc_endpoint_id.setPlaceholderText('旗舰版知识库ID (可选, 用于Responses API)')
         volc_layout.addRow('旗舰版ID:', self.volc_endpoint_id)
-        volc_hint = QLabel('优先使用 search_knowledge API (需Resource ID或集合名称)。\n旗舰版知识库可使用 Responses API + knowledge_search 工具。')
+        volc_hint = QLabel('模式1 search_knowledge（推荐）：需Access Key + Secret Key + Resource ID/集合名称\n'
+                           '模式2 Responses API：需API Key + 旗舰版知识库ID\n'
+                           '两种模式可同时配置，优先使用search_knowledge')
         volc_hint.setStyleSheet("color: #666670; font-size: 11px;")
         volc_hint.setWordWrap(True)
         volc_layout.addRow(volc_hint)
@@ -1595,6 +1822,8 @@ class _KBConfigDialog(QDialog):
             kb_config = {
                 'type': 'volcengine',
                 'api_key': self.volc_api_key.text().strip(),
+                'access_key': self.volc_access_key.text().strip(),
+                'secret_key': self.volc_secret_key.text().strip(),
                 'resource_id': self.volc_resource_id.text().strip(),
                 'collection_name': self.volc_collection.text().strip(),
                 'endpoint_id': self.volc_endpoint_id.text().strip(),
@@ -1640,6 +1869,8 @@ class _KBConfigDialog(QDialog):
         config['knowledge_bases']['volcengine'] = {
             'type': 'volcengine',
             'api_key': self.volc_api_key.text().strip(),
+            'access_key': self.volc_access_key.text().strip(),
+            'secret_key': self.volc_secret_key.text().strip(),
             'resource_id': self.volc_resource_id.text().strip(),
             'collection_name': self.volc_collection.text().strip(),
             'endpoint_id': self.volc_endpoint_id.text().strip(),

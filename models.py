@@ -268,16 +268,28 @@ def init_db(db_path=None):
                   owner_id INTEGER, encrypted INTEGER DEFAULT 0, encryption_hash TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS medical_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  disease_id INTEGER, title TEXT, content TEXT,
+                  disease_id INTEGER, parent_id INTEGER DEFAULT 0, title TEXT, content TEXT,
                   image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS anatomy_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  title TEXT, content TEXT,
+                  parent_id INTEGER DEFAULT 0, title TEXT, content TEXT,
                   image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS imaging_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  disease_id INTEGER, title TEXT, content TEXT,
+                  disease_id INTEGER, parent_id INTEGER DEFAULT 0, title TEXT, content TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    try:
+        c.execute("ALTER TABLE imaging_records ADD COLUMN parent_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE medical_records ADD COLUMN parent_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anatomy_records ADD COLUMN parent_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     try:
         c.execute("ALTER TABLE images ADD COLUMN media_type TEXT")
     except sqlite3.OperationalError:
@@ -501,16 +513,28 @@ def init_db(db_path=None):
                   encryption_hash TEXT, original_filename TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS medical_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  disease_id INTEGER, title TEXT, content TEXT,
+                  disease_id INTEGER, parent_id INTEGER DEFAULT 0, title TEXT, content TEXT,
                   image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS anatomy_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  title TEXT, content TEXT,
+                  parent_id INTEGER DEFAULT 0, title TEXT, content TEXT,
                   image_filename TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS imaging_records
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  disease_id INTEGER, title TEXT, content TEXT,
+                  disease_id INTEGER, parent_id INTEGER DEFAULT 0, title TEXT, content TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    try:
+        c.execute("ALTER TABLE imaging_records ADD COLUMN parent_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE medical_records ADD COLUMN parent_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anatomy_records ADD COLUMN parent_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     try:
         c.execute("ALTER TABLE images ADD COLUMN media_type TEXT")
     except sqlite3.OperationalError:
