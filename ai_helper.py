@@ -897,6 +897,7 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
         req.set_headers({
             'Accept': 'application/json',
             'Content-Type': 'application/json',
+            'Host': host,
         })
         req.set_path(path)
         req.set_body(body)
