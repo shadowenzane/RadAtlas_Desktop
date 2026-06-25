@@ -330,7 +330,7 @@ QToolTip {{
 
 
 # 默认主题
-DARK_STYLE = build_stylesheet(THEMES['深蓝暗夜'])
+DARK_STYLE = build_stylesheet(THEMES['暖沙'])
 
 
 class _TitleBtn(QPushButton):
@@ -1030,11 +1030,13 @@ class AIDiagnosisDialog(QDialog):
         self.kb_tencent = QRadioButton('腾讯知识库')
         self.kb_volcengine = QRadioButton('火山方舟知识库')
         self.kb_notebooklm = QRadioButton('NotebookLM')
-        # 默认选中第一个有配置的知识库，否则选中"不使用"
+        # 默认选中火山方舟（若已配置），否则选第一个有配置的，否则选中"不使用"
         kb_configs = load_config().get('knowledge_bases', {})
         default_kb_selected = False
-        for kb_type, kb_radio in [('tencent', self.kb_tencent), ('volcengine', self.kb_volcengine), ('notebooklm', self.kb_notebooklm)]:
-            if kb_configs.get(kb_type, {}).get('api_key') and not default_kb_selected:
+        for kb_type, kb_radio in [('volcengine', self.kb_volcengine), ('tencent', self.kb_tencent), ('notebooklm', self.kb_notebooklm)]:
+            kb_cfg = kb_configs.get(kb_type, {})
+            has_creds = kb_cfg.get('api_key') or (kb_cfg.get('access_key') and kb_cfg.get('secret_key'))
+            if has_creds and not default_kb_selected:
                 kb_radio.setChecked(True)
                 default_kb_selected = True
         if not default_kb_selected:
@@ -1911,7 +1913,7 @@ class _ImageLoadWorker(QThread):
 
 
 class _KBSnippetViewer(QDialog):
-    """知识库文档切片/快照查看器 — 支持缩放查看图文内容"""
+    """知识库文档切片/快照查看器 — 支持缩放查看图文内容，主题与主程序一致"""
     def __init__(self, doc, parent=None):
         super().__init__(parent)
         doc_name = doc.get('doc_name', '未知文档')
@@ -1919,19 +1921,33 @@ class _KBSnippetViewer(QDialog):
         self.setMinimumSize(700, 600)
         self._doc = doc
         self._zoom_level = 0
+        # 检测当前主题
+        self._theme_name = self._detect_theme()
+        self._t = THEMES[self._theme_name]
         self._init_ui()
 
+    def _detect_theme(self):
+        app = QApplication.instance()
+        if app:
+            ss = app.styleSheet()
+            for name, t in THEMES.items():
+                if t['bg'] in ss:
+                    return name
+        return '暖沙'
+
     def _init_ui(self):
+        t = self._t
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        self.setStyleSheet(f"QDialog {{ background: {t['bg']}; }}")
 
         # 工具栏
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(12, 8, 12, 8)
         toolbar.setSpacing(6)
         title_label = QLabel(f'&#128218; {self._doc.get("doc_name", "未知文档")}')
-        title_label.setStyleSheet("color: #f0c060; font-size: 14px; font-weight: bold;")
+        title_label.setStyleSheet(f"color: {t['accent_hover']}; font-size: 14px; font-weight: bold;")
         title_label.setTextFormat(Qt.RichText)
         toolbar.addWidget(title_label)
         toolbar.addStretch()
@@ -1939,29 +1955,30 @@ class _KBSnippetViewer(QDialog):
         # 页码信息
         page = self._doc.get('page', '')
         if page:
-            page_label = QLabel(f'第 {page} 页')
-            page_label.setStyleSheet("color: #888890; font-size: 12px;")
+            page_label = QLabel(f'切片ID: {page}')
+            page_label.setStyleSheet(f"color: {t['fg2']}; font-size: 12px;")
             toolbar.addWidget(page_label)
 
         # 缩放按钮
+        btn_style = f"QPushButton {{ background: {t['bg3']}; color: {t['fg']}; border: 1px solid {t['border']}; border-radius: 4px; font-size:14px; font-weight:bold; padding:0; }} QPushButton:hover {{ background: {t['muted']}; }}"
         zoom_in_btn = QPushButton('＋')
         zoom_in_btn.setFixedSize(32, 28)
         zoom_in_btn.setToolTip('放大')
-        zoom_in_btn.setStyleSheet("QPushButton { font-size:16px; font-weight:bold; padding:0; }")
+        zoom_in_btn.setStyleSheet(btn_style)
         zoom_in_btn.clicked.connect(lambda checked=False: self._zoom(1))
         toolbar.addWidget(zoom_in_btn)
 
         zoom_out_btn = QPushButton('－')
         zoom_out_btn.setFixedSize(32, 28)
         zoom_out_btn.setToolTip('缩小')
-        zoom_out_btn.setStyleSheet("QPushButton { font-size:16px; font-weight:bold; padding:0; }")
+        zoom_out_btn.setStyleSheet(btn_style)
         zoom_out_btn.clicked.connect(lambda checked=False: self._zoom(-1))
         toolbar.addWidget(zoom_out_btn)
 
         reset_btn = QPushButton('1:1')
         reset_btn.setFixedSize(40, 28)
         reset_btn.setToolTip('重置缩放')
-        reset_btn.setStyleSheet("QPushButton { font-size:12px; padding:0; }")
+        reset_btn.setStyleSheet(btn_style.replace('font-size:14px', 'font-size:11px'))
         reset_btn.clicked.connect(self._reset_zoom)
         toolbar.addWidget(reset_btn)
 
@@ -1970,15 +1987,15 @@ class _KBSnippetViewer(QDialog):
         # 分割线
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: #2a2a30;")
+        sep.setStyleSheet(f"color: {t['border']};")
         layout.addWidget(sep)
 
         # 内容区
         self.browser = QTextBrowser()
         self.browser.setOpenExternalLinks(True)
-        self.browser.setStyleSheet("""
-            QTextBrowser { background: #1a1a1e; border: none;
-                          color: #d0d0d4; padding: 20px; font-size: 14px; line-height: 1.8; }
+        self.browser.setStyleSheet(f"""
+            QTextBrowser {{ background: {t['bg2']}; border: none;
+                          color: {t['fg']}; padding: 20px; font-size: 14px; line-height: 1.8; }}
         """)
         # 先显示文本内容，图片异步加载
         self.browser.setHtml(self._build_content_html())
@@ -1995,10 +2012,10 @@ class _KBSnippetViewer(QDialog):
         url = self._doc.get('url', '')
         if url:
             open_btn = QPushButton('🔗 查看原文')
-            open_btn.setStyleSheet("""
-                QPushButton { background: rgba(63,123,247,20); color: #5a91ff; border: 1px solid rgba(63,123,247,40);
-                              border-radius: 4px; padding: 6px 16px; font-size: 12px; }
-                QPushButton:hover { background: rgba(63,123,247,30); }
+            open_btn.setStyleSheet(f"""
+                QPushButton {{ background: {t['bg3']}; color: {t['accent_hover']}; border: 1px solid {t['border']};
+                              border-radius: 4px; padding: 6px 16px; font-size: 12px; }}
+                QPushButton:hover {{ background: {t['muted']}; }}
             """)
             open_btn.clicked.connect(lambda: self.browser.setSource(QUrl(url)))
             btn_row.addWidget(open_btn)
@@ -2006,17 +2023,17 @@ class _KBSnippetViewer(QDialog):
         btn_row.addStretch()
 
         close_btn = QPushButton('关闭')
-        close_btn.setObjectName('mutedBtn')
+        close_btn.setStyleSheet(f"QPushButton {{ background: {t['bg3']}; color: {t['fg']}; border: 1px solid {t['border']}; border-radius: 4px; padding: 6px 16px; }} QPushButton:hover {{ background: {t['muted']}; }}")
         close_btn.setFixedWidth(80)
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
     def _build_content_html(self):
-        """构建切片内容HTML（含原书图片）"""
+        """构建切片内容HTML（含原书图片），使用主题配色"""
+        t = self._t
         doc_name = self._doc.get('doc_name', '')
         page = self._doc.get('page', '')
-        # 优先使用 full_content（完整内容），其次用 snippet
         content = self._doc.get('full_content', '') or self._doc.get('snippet', '')
         source = self._doc.get('source', '')
         url = self._doc.get('url', '')
@@ -2027,62 +2044,59 @@ class _KBSnippetViewer(QDialog):
         # 元信息条
         meta_parts = []
         if source:
-            meta_parts.append(f'<span style="color:#5a91ff;">{source}</span>')
+            meta_parts.append(f'<span style="color:{t["accent_hover"]};">{source}</span>')
         if page:
-            meta_parts.append(f'<span style="color:#888890;">切片ID: {page}</span>')
+            meta_parts.append(f'<span style="color:{t["fg2"]};">切片ID: {page}</span>')
         if images:
-            meta_parts.append(f'<span style="color:#f0c060;">含 {len(images)} 张原书图片</span>')
+            meta_parts.append(f'<span style="color:{t["accent_hover"]};">含 {len(images)} 张原书图片</span>')
         if meta_parts:
-            html += f'<div style="margin-bottom:16px; padding:8px 12px; background:rgba(245,158,11,8); '
-            html += 'border-radius:4px; border-left:3px solid #f59e0b; font-size:12px;">'
+            html += f'<div style="margin-bottom:16px; padding:8px 12px; background:{t["bg3"]}; '
+            html += f'border-radius:4px; border-left:3px solid {t["accent"]}; font-size:12px;">'
             html += ' &nbsp;|&nbsp; '.join(meta_parts)
             html += '</div>'
 
         # 切片文本内容（完整显示）
         if content:
-            html += '<div style="color:#d0d0d4; line-height:2.0; white-space:pre-wrap; '
-            html += 'font-size:14px;">'
-            # 将文本中的URL转为链接
+            html += f'<div style="color:{t["fg"]}; line-height:2.0; white-space:pre-wrap; font-size:14px;">'
             import re as _re
             content_escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             content_escaped = _re.sub(
                 r'(https?://[^\s<]+)',
-                r'<a href="\1" style="color:#3f7bf7;">\1</a>',
+                rf'<a href="\1" style="color:{t["accent_hover"]};">\1</a>',
                 content_escaped
             )
             html += content_escaped
             html += '</div>'
         else:
-            html += '<p style="color:#666670;">（无文本内容）</p>'
+            html += f'<p style="color:{t["fg3"]};">（无文本内容）</p>'
 
         # 原书图片
         if images:
             local_paths = getattr(self, '_image_local_paths', {})
             loaded_count = len(local_paths)
-            html += '<hr style="border:none; border-top:1px solid #2a2a30; margin:20px 0;">'
+            html += f'<hr style="border:none; border-top:1px solid {t["border"]}; margin:20px 0;">'
             if loaded_count < len(images):
-                html += f'<h3 style="color:#f0c060; margin:16px 0 12px 0;">原书图片（{len(images)}张，已加载{loaded_count}张...）</h3>'
+                html += f'<h3 style="color:{t["accent_hover"]}; margin:16px 0 12px 0;">原书图片（{len(images)}张，已加载{loaded_count}张...）</h3>'
             else:
-                html += f'<h3 style="color:#f0c060; margin:16px 0 12px 0;">原书图片（{len(images)}张）</h3>'
+                html += f'<h3 style="color:{t["accent_hover"]}; margin:16px 0 12px 0;">原书图片（{len(images)}张）</h3>'
             for i, img in enumerate(images):
                 caption = img.get('caption', '')
-                # 优先使用已下载的本地文件路径
                 local_path = local_paths.get(i)
                 if local_path:
                     img_src = QUrl.fromLocalFile(local_path).toString()
                     html += f'<div style="margin-bottom:24px; text-align:center; page-break-inside:avoid;">'
-                    html += f'<img src="{img_src}" style="max-width:100%; max-height:600px; '
-                    html += 'border:1px solid #3a3a40; border-radius:6px; margin:8px 0; '
+                    html += f'<img src="{img_src}" style="max-width:90%; max-height:500px; '
+                    html += f'border:1px solid {t["border"]}; border-radius:6px; margin:8px 0; '
                     html += 'box-shadow:0 2px 8px rgba(0,0,0,0.3);" />'
                     if caption:
-                        html += f'<p style="color:#888890; font-size:12px; margin-top:6px;">{caption}</p>'
+                        html += f'<p style="color:{t["fg2"]}; font-size:12px; margin-top:6px;">{caption}</p>'
                     else:
-                        html += f'<p style="color:#666670; font-size:11px; margin-top:6px;">图 {i+1}</p>'
+                        html += f'<p style="color:{t["fg3"]}; font-size:11px; margin-top:6px;">图 {i+1}</p>'
                     html += '</div>'
                 else:
                     html += f'<div style="margin-bottom:20px; text-align:center; padding:40px; '
-                    html += 'background:#1a1a1e; border:2px dashed #2a2a30; border-radius:8px;">'
-                    html += f'<p style="color:#666670; font-size:12px;">图 {i+1} 加载中...</p>'
+                    html += f'background:{t["bg3"]}; border:2px dashed {t["border"]}; border-radius:8px;">'
+                    html += f'<p style="color:{t["fg3"]}; font-size:12px;">图 {i+1} 加载中...</p>'
                     html += '</div>'
 
         html += '</div>'
@@ -2173,6 +2187,8 @@ class _KBConfigDialog(QDialog):
                         border-radius: 6px; margin-top: 8px; padding-top: 16px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
         """
+        # 输入框使用较小字号
+        content.setStyleSheet("QLineEdit { font-size: 11px; } QLabel { font-size: 11px; }")
 
         # CSV一键导入按钮
         import_row = QHBoxLayout()
@@ -2858,7 +2874,7 @@ class ImageViewerDialog(QDialog):
             for name, t in THEMES.items():
                 if t['bg'] in ss:
                     return name
-        return '深蓝暗夜'
+        return '暖沙'
 
     def _apply_theme(self):
         t = THEMES[self.current_theme]
@@ -4075,7 +4091,7 @@ class ImageEditorDialog(QDialog):
             for name, t in THEMES.items():
                 if t['bg'] in ss:
                     return name
-        return '深蓝暗夜'
+        return '暖沙'
 
     def _apply_theme(self):
         t = THEMES[self.current_theme]
@@ -9563,7 +9579,7 @@ class MainWindow(QMainWindow):
         self.user_info = user_info
         self.active_db = active_db
         self.user_password = user_password
-        self.current_theme = '深蓝暗夜'
+        self.current_theme = '暖沙'
         self.setWindowTitle(f'RadAtlas {APP_VERSION} 影像图鉴助手')
         self.setMinimumSize(1000, 650)
         self.resize(1200, 750)
