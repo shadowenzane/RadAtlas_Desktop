@@ -1129,7 +1129,8 @@ class AIDiagnosisDialog(QDialog):
         detail_toolbar.addWidget(self.fav_btn)
         detail_layout.addLayout(detail_toolbar)
         self.detail_browser = QTextBrowser()
-        self.detail_browser.setOpenExternalLinks(True)
+        self.detail_browser.setOpenExternalLinks(False)
+        self.detail_browser.anchorClicked.connect(self._on_detail_link_clicked)
         self.detail_browser.setStyleSheet("""
             QTextBrowser { background: #1a1a1e; border: 1px solid #2a2a30;
                           border-radius: 6px; color: #d0d0d4; padding: 12px; font-size: 13px; }
@@ -1465,13 +1466,20 @@ class AIDiagnosisDialog(QDialog):
 
         html += '</div>'
 
-        # 内容摘要
+        # 内容摘要 — 以链接形式显示，点击打开查看器
         if snippet:
-            html += '<h4 style="color:#5a91ff; margin-top:16px;">内容摘要</h4>'
-            html += '<div style="color:#c0c0c8; line-height:1.8; padding:12px; '
-            html += 'background:rgba(255,255,255,3); border-radius:6px; '
-            html += 'border-left:3px solid #5a91ff; white-space:pre-wrap;">'
-            html += f'{snippet}</div>'
+            html += '<h4 style="color:#5a91ff; margin-top:16px;">切片/快照内容</h4>'
+            html += '<div style="padding:16px; background:rgba(255,255,255,3); border-radius:6px; '
+            html += 'border-left:3px solid #5a91ff; text-align:center;">'
+            # 简短预览（前80字）
+            preview = snippet[:80].replace('\n', ' ').strip()
+            if len(snippet) > 80:
+                preview += '...'
+            html += f'<p style="color:#888890; font-size:12px; margin:0 0 10px 0;">{preview}</p>'
+            html += '<a href="snippet://view" style="display:inline-block; padding:8px 24px; '
+            html += 'background:rgba(245,158,11,20); color:#f0c060; border-radius:6px; '
+            html += 'text-decoration:none; font-size:13px; font-weight:bold;">&#128196; 查看完整切片内容（可缩放）</a>'
+            html += '</div>'
 
         # 如果有链接，添加查看原文按钮
         if url:
@@ -1494,6 +1502,19 @@ class AIDiagnosisDialog(QDialog):
                           border-radius: 6px; color: #d0d0d4; padding: 12px;
                           font-size: {self._detail_font_size}px; }}
         """)
+
+    def _on_detail_link_clicked(self, url):
+        """处理详情面板中的链接点击"""
+        from PyQt5.QtGui import QDesktopServices
+        if url.scheme() == 'snippet':
+            # 切片内容查看链接 → 打开查看器
+            doc = getattr(self, '_current_kb_doc', None)
+            if doc:
+                viewer = _KBSnippetViewer(doc, self)
+                viewer.exec_()
+        else:
+            # 外部链接 → 系统浏览器打开
+            QDesktopServices.openUrl(url)
 
     def _toggle_favorite(self, checked=False):
         """收藏/取消收藏当前知识库文档"""
@@ -1826,9 +1847,10 @@ class _HelpDialog(QDialog):
 
 <h3 style="color:#5a91ff; margin-top:16px;">3. 知识库文档查看</h3>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li>点击左侧知识库文档条目，右侧显示文档快照详情（PDF切片内容）</li>
-<li>详情包含：文档名称、来源、页码、原文链接、内容摘要</li>
-<li><b>放大/缩小</b>：点击详情面板右上角的"＋"/"－"按钮可调整字体大小，方便查看PDF切片内容</li>
+<li>点击左侧知识库文档条目，右侧显示文档快照详情（含元信息和切片预览）</li>
+<li>详情包含：文档名称、来源、页码、原文链接</li>
+<li><b>切片/快照查看</b>：点击"查看完整切片内容"链接，打开独立查看器窗口，显示完整切片内容（含图文）</li>
+<li><b>放大/缩小</b>：查看器和详情面板均有缩放按钮（＋/－），查看器还提供1:1重置按钮。使用 QTextBrowser 内置缩放，同时缩放文字和图片</li>
 <li><b>收藏保存</b>：点击"☆ 收藏"按钮可保存当前文档，再次点击取消收藏。收藏的文档保存在 kb_favorites.json 中</li>
 <li>左侧结果列表过多时会自动显示滚动条，可滚动查看所有条目</li>
 <li>点击"查看原文"链接可跳转到原始文档</li>
@@ -1846,6 +1868,163 @@ class _HelpDialog(QDialog):
 </p>
 
 </div>"""
+
+
+class _KBSnippetViewer(QDialog):
+    """知识库文档切片/快照查看器 — 支持缩放查看图文内容"""
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        doc_name = doc.get('doc_name', '未知文档')
+        self.setWindowTitle(f'切片查看 - {doc_name}')
+        self.setMinimumSize(700, 600)
+        self._doc = doc
+        self._zoom_level = 0
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 工具栏
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(12, 8, 12, 8)
+        toolbar.setSpacing(6)
+        title_label = QLabel(f'&#128218; {self._doc.get("doc_name", "未知文档")}')
+        title_label.setStyleSheet("color: #f0c060; font-size: 14px; font-weight: bold;")
+        title_label.setTextFormat(Qt.RichText)
+        toolbar.addWidget(title_label)
+        toolbar.addStretch()
+
+        # 页码信息
+        page = self._doc.get('page', '')
+        if page:
+            page_label = QLabel(f'第 {page} 页')
+            page_label.setStyleSheet("color: #888890; font-size: 12px;")
+            toolbar.addWidget(page_label)
+
+        # 缩放按钮
+        zoom_in_btn = QPushButton('＋')
+        zoom_in_btn.setFixedSize(32, 28)
+        zoom_in_btn.setToolTip('放大')
+        zoom_in_btn.setStyleSheet("QPushButton { font-size:16px; font-weight:bold; padding:0; }")
+        zoom_in_btn.clicked.connect(lambda checked=False: self._zoom(1))
+        toolbar.addWidget(zoom_in_btn)
+
+        zoom_out_btn = QPushButton('－')
+        zoom_out_btn.setFixedSize(32, 28)
+        zoom_out_btn.setToolTip('缩小')
+        zoom_out_btn.setStyleSheet("QPushButton { font-size:16px; font-weight:bold; padding:0; }")
+        zoom_out_btn.clicked.connect(lambda checked=False: self._zoom(-1))
+        toolbar.addWidget(zoom_out_btn)
+
+        reset_btn = QPushButton('1:1')
+        reset_btn.setFixedSize(40, 28)
+        reset_btn.setToolTip('重置缩放')
+        reset_btn.setStyleSheet("QPushButton { font-size:12px; padding:0; }")
+        reset_btn.clicked.connect(self._reset_zoom)
+        toolbar.addWidget(reset_btn)
+
+        layout.addLayout(toolbar)
+
+        # 分割线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #2a2a30;")
+        layout.addWidget(sep)
+
+        # 内容区
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(True)
+        self.browser.setStyleSheet("""
+            QTextBrowser { background: #1a1a1e; border: none;
+                          color: #d0d0d4; padding: 20px; font-size: 14px; line-height: 1.8; }
+        """)
+        self.browser.setHtml(self._build_content_html())
+        layout.addWidget(self.browser)
+
+        # 底部按钮栏
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(12, 8, 12, 8)
+        btn_row.setSpacing(8)
+
+        url = self._doc.get('url', '')
+        if url:
+            open_btn = QPushButton('🔗 查看原文')
+            open_btn.setStyleSheet("""
+                QPushButton { background: rgba(63,123,247,20); color: #5a91ff; border: 1px solid rgba(63,123,247,40);
+                              border-radius: 4px; padding: 6px 16px; font-size: 12px; }
+                QPushButton:hover { background: rgba(63,123,247,30); }
+            """)
+            open_btn.clicked.connect(lambda: self.browser.setSource(QUrl(url)))
+            btn_row.addWidget(open_btn)
+
+        btn_row.addStretch()
+
+        close_btn = QPushButton('关闭')
+        close_btn.setObjectName('mutedBtn')
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _build_content_html(self):
+        """构建切片内容HTML"""
+        doc_name = self._doc.get('doc_name', '')
+        page = self._doc.get('page', '')
+        snippet = self._doc.get('snippet', '')
+        source = self._doc.get('source', '')
+        url = self._doc.get('url', '')
+
+        html = '<div style="font-family: Microsoft YaHei;">'
+
+        # 元信息条
+        meta_parts = []
+        if source:
+            meta_parts.append(f'<span style="color:#5a91ff;">{source}</span>')
+        if page:
+            meta_parts.append(f'<span style="color:#888890;">第 {page} 页</span>')
+        if meta_parts:
+            html += f'<div style="margin-bottom:16px; padding:8px 12px; background:rgba(245,158,11,8); '
+            html += 'border-radius:4px; border-left:3px solid #f59e0b; font-size:12px;">'
+            html += ' &nbsp;|&nbsp; '.join(meta_parts)
+            html += '</div>'
+
+        # 切片内容（完整显示，支持图文）
+        if snippet:
+            html += '<div style="color:#d0d0d4; line-height:2.0; white-space:pre-wrap; '
+            html += 'font-size:14px;">'
+            # 将文本中的URL转为链接
+            import re as _re
+            snippet_escaped = snippet.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            snippet_escaped = _re.sub(
+                r'(https?://[^\s<]+)',
+                r'<a href="\1" style="color:#3f7bf7;">\1</a>',
+                snippet_escaped
+            )
+            html += snippet_escaped
+            html += '</div>'
+        else:
+            html += '<p style="color:#666670;">（无切片内容）</p>'
+
+        html += '</div>'
+        return html
+
+    def _zoom(self, delta):
+        """缩放内容（QTextBrowser.zoomIn/zoomOut 同时缩放文字和图片）"""
+        self._zoom_level += delta
+        if delta > 0:
+            self.browser.zoomIn(delta)
+        else:
+            self.browser.zoomOut(-delta)
+
+    def _reset_zoom(self):
+        """重置缩放"""
+        if self._zoom_level > 0:
+            self.browser.zoomOut(self._zoom_level)
+        elif self._zoom_level < 0:
+            self.browser.zoomIn(-self._zoom_level)
+        self._zoom_level = 0
 
 
 class _KBConfigDialog(QDialog):
