@@ -1017,10 +1017,13 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
     # 构建检索请求
     # 注意：免费版/标准版知识库不支持 query_param.doc_filter，而API要求
     # query_param必须包含doc_filter，因此不能使用query_param字段
-    # post_processing中的高级功能可能触发QPS限制，使用最简payload保证兼容性
+    # post_processing.get_attachment_link 用于获取原书图片的预签名URL
     payload = {
         'query': keywords,
         'limit': 5,
+        'post_processing': {
+            'get_attachment_link': True,
+        },
     }
 
     if resource_id:
@@ -1135,17 +1138,37 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
             continue
         context_parts.append(content)
 
-        doc_name = (c.get('chunk_title', '') or c.get('doc_name', '') or
+        # 从 doc_info 提取文档信息
+        doc_info = c.get('doc_info', {}) or {}
+        doc_name = (doc_info.get('doc_name', '') or doc_info.get('title', '') or
+                    c.get('chunk_title', '') or c.get('doc_name', '') or
                     c.get('title', '') or c.get('filename', '') or '未知文档')
         page = str(c.get('chunk_id', '') or c.get('page', '') or c.get('page_num', ''))
         doc_url = c.get('attachment_link', '') or c.get('url', '') or c.get('doc_url', '')
+
+        # 提取原书图片（chunk_attachment 中的 image 类型）
+        images = []
+        chunk_attach = c.get('chunk_attachment', []) or []
+        if isinstance(chunk_attach, list):
+            for att in chunk_attach:
+                if isinstance(att, dict) and att.get('type', '') == 'image':
+                    img_link = att.get('link', '')
+                    if img_link:
+                        images.append({
+                            'url': img_link,
+                            'caption': att.get('caption', ''),
+                        })
+
+        # 完整内容（不截断，用于查看器显示）
         snippet = content[:300] + ('...' if len(content) > 300 else '')
 
         doc_snapshots.append({
             'doc_name': doc_name,
             'page': page,
             'snippet': snippet,
+            'full_content': content,
             'url': doc_url,
+            'images': images,
             'source': '火山方舟知识库',
         })
 
@@ -1248,6 +1271,13 @@ def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
                         doc_name = r.get('title', '') or r.get('doc_name', '未知文档')
                         content = r.get('content', '') or r.get('text', '')
                         url = r.get('url', '') or r.get('attachment_link', '')
+                        # 提取图片附件
+                        images = []
+                        for att in (r.get('chunk_attachment', []) or r.get('attachments', []) or []):
+                            if isinstance(att, dict) and att.get('type', '') == 'image':
+                                img_link = att.get('link', '')
+                                if img_link:
+                                    images.append({'url': img_link, 'caption': att.get('caption', '')})
                         snippet = content[:300] + ('...' if len(content) > 300 else '') if content else ''
                         if content:
                             context_parts.append(content)
@@ -1255,7 +1285,9 @@ def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
                             'doc_name': doc_name,
                             'page': '',
                             'snippet': snippet,
+                            'full_content': content,
                             'url': url,
+                            'images': images,
                             'source': '火山方舟知识库',
                         })
 

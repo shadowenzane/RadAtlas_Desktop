@@ -1468,6 +1468,8 @@ class AIDiagnosisDialog(QDialog):
 
         # 内容摘要 — 以链接形式显示，点击打开查看器
         if snippet:
+            images = doc.get('images', []) or []
+            img_count = len(images)
             html += '<h4 style="color:#5a91ff; margin-top:16px;">切片/快照内容</h4>'
             html += '<div style="padding:16px; background:rgba(255,255,255,3); border-radius:6px; '
             html += 'border-left:3px solid #5a91ff; text-align:center;">'
@@ -1476,9 +1478,13 @@ class AIDiagnosisDialog(QDialog):
             if len(snippet) > 80:
                 preview += '...'
             html += f'<p style="color:#888890; font-size:12px; margin:0 0 10px 0;">{preview}</p>'
+            # 链接文本：有图片时提示含图片
+            link_text = '&#128196; 查看完整切片内容（可缩放）'
+            if img_count:
+                link_text = f'&#128196; 查看完整切片内容（含{img_count}张原书图片，可缩放）'
             html += '<a href="snippet://view" style="display:inline-block; padding:8px 24px; '
             html += 'background:rgba(245,158,11,20); color:#f0c060; border-radius:6px; '
-            html += 'text-decoration:none; font-size:13px; font-weight:bold;">&#128196; 查看完整切片内容（可缩放）</a>'
+            html += f'text-decoration:none; font-size:13px; font-weight:bold;">{link_text}</a>'
             html += '</div>'
 
         # 如果有链接，添加查看原文按钮
@@ -1848,8 +1854,9 @@ class _HelpDialog(QDialog):
 <h3 style="color:#5a91ff; margin-top:16px;">3. 知识库文档查看</h3>
 <ul style="color:#c0c0c8; font-size:12px;">
 <li>点击左侧知识库文档条目，右侧显示文档快照详情（含元信息和切片预览）</li>
-<li>详情包含：文档名称、来源、页码、原文链接</li>
-<li><b>切片/快照查看</b>：点击"查看完整切片内容"链接，打开独立查看器窗口，显示完整切片内容（含图文）</li>
+<li>详情包含：文档名称、来源、切片ID、原文链接</li>
+<li><b>切片/快照查看</b>：点击"查看完整切片内容"链接，打开独立查看器窗口，显示完整切片内容</li>
+<li><b>原书图片</b>：火山方舟知识库返回的切片中包含原书图片（预签名URL，4小时有效），在查看器中以&lt;img&gt;标签内联显示，可直接查看原书中的影像图片</li>
 <li><b>放大/缩小</b>：查看器和详情面板均有缩放按钮（＋/－），查看器还提供1:1重置按钮。使用 QTextBrowser 内置缩放，同时缩放文字和图片</li>
 <li><b>收藏保存</b>：点击"☆ 收藏"按钮可保存当前文档，再次点击取消收藏。收藏的文档保存在 kb_favorites.json 中</li>
 <li>左侧结果列表过多时会自动显示滚动条，可滚动查看所有条目</li>
@@ -1969,12 +1976,14 @@ class _KBSnippetViewer(QDialog):
         layout.addLayout(btn_row)
 
     def _build_content_html(self):
-        """构建切片内容HTML"""
+        """构建切片内容HTML（含原书图片）"""
         doc_name = self._doc.get('doc_name', '')
         page = self._doc.get('page', '')
-        snippet = self._doc.get('snippet', '')
+        # 优先使用 full_content（完整内容），其次用 snippet
+        content = self._doc.get('full_content', '') or self._doc.get('snippet', '')
         source = self._doc.get('source', '')
         url = self._doc.get('url', '')
+        images = self._doc.get('images', []) or []
 
         html = '<div style="font-family: Microsoft YaHei;">'
 
@@ -1983,29 +1992,48 @@ class _KBSnippetViewer(QDialog):
         if source:
             meta_parts.append(f'<span style="color:#5a91ff;">{source}</span>')
         if page:
-            meta_parts.append(f'<span style="color:#888890;">第 {page} 页</span>')
+            meta_parts.append(f'<span style="color:#888890;">切片ID: {page}</span>')
+        if images:
+            meta_parts.append(f'<span style="color:#f0c060;">含 {len(images)} 张原书图片</span>')
         if meta_parts:
             html += f'<div style="margin-bottom:16px; padding:8px 12px; background:rgba(245,158,11,8); '
             html += 'border-radius:4px; border-left:3px solid #f59e0b; font-size:12px;">'
             html += ' &nbsp;|&nbsp; '.join(meta_parts)
             html += '</div>'
 
-        # 切片内容（完整显示，支持图文）
-        if snippet:
+        # 切片文本内容（完整显示）
+        if content:
             html += '<div style="color:#d0d0d4; line-height:2.0; white-space:pre-wrap; '
             html += 'font-size:14px;">'
             # 将文本中的URL转为链接
             import re as _re
-            snippet_escaped = snippet.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            snippet_escaped = _re.sub(
+            content_escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            content_escaped = _re.sub(
                 r'(https?://[^\s<]+)',
                 r'<a href="\1" style="color:#3f7bf7;">\1</a>',
-                snippet_escaped
+                content_escaped
             )
-            html += snippet_escaped
+            html += content_escaped
             html += '</div>'
         else:
-            html += '<p style="color:#666670;">（无切片内容）</p>'
+            html += '<p style="color:#666670;">（无文本内容）</p>'
+
+        # 原书图片
+        if images:
+            html += '<hr style="border:none; border-top:1px solid #2a2a30; margin:20px 0;">'
+            html += f'<h3 style="color:#f0c060; margin:16px 0 12px 0;">原书图片（{len(images)}张）</h3>'
+            for i, img in enumerate(images):
+                img_url = img.get('url', '')
+                caption = img.get('caption', '')
+                if img_url:
+                    html += f'<div style="margin-bottom:20px; text-align:center;">'
+                    html += f'<img src="{img_url}" style="max-width:100%; border:2px solid #2a2a30; '
+                    html += 'border-radius:8px; margin:8px 0;" />'
+                    if caption:
+                        html += f'<p style="color:#888890; font-size:12px; margin-top:4px;">{caption}</p>'
+                    else:
+                        html += f'<p style="color:#666670; font-size:11px; margin-top:4px;">图 {i+1}</p>'
+                    html += '</div>'
 
         html += '</div>'
         return html
