@@ -685,19 +685,17 @@ def _volc_sign_request(method, path, ak, sk, body, host, service='air', region='
 
 
 def _query_tencent_kb(kb_config, exam_type, keywords):
-    """查询腾讯IMA个人知识库，返回 (上下文文本, 文档快照列表)
+    """查询腾讯IMA知识库，返回 (上下文文本, 文档快照列表)
 
-    使用 IMA OpenAPI 搜索笔记并获取内容。
+    使用 IMA OpenAPI 知识库模块 (wiki/v1) 搜索知识库内容。
+    若知识库模块无结果，降级到笔记模块 (note/v1)。
+
     认证方式: ima-openapi-clientid + ima-openapi-apikey 请求头。
-
-    多策略检索提高命中率：
-    1. 按标题精确搜索疾病名
-    2. 按正文搜索疾病名
-    3. 按正文搜索"检查类型+疾病名"组合
     """
     api_url = kb_config.get('api_url', KNOWLEDGE_PROVIDERS['tencent']['api_url'])
     client_id = kb_config.get('api_key', '') or kb_config.get('client_id', '')
     api_key = kb_config.get('secret_key', '') or kb_config.get('api_key_secret', '')
+    knowledge_base_id = kb_config.get('knowledge_base_id', '')
 
     if not client_id or not api_key:
         raise ValueError('腾讯IMA需要 Client ID 和 API Key，请在知识库配置中填写')
@@ -717,82 +715,151 @@ def _query_tencent_kb(kb_config, exam_type, keywords):
                 search_query = line.split('：', 1)[-1].strip() if '：' in line else line.split(':', 1)[-1].strip()
                 break
 
-    search_url = f'{api_url}/note/v1/search_note_book'
-
-    def _ima_search(search_type, query_text, start=0, end=20):
-        """执行IMA搜索，返回docs列表"""
-        payload = {
-            'search_type': search_type,
-            'query_info': {'title': query_text} if search_type == 0 else {'content': query_text},
-            'start': start,
-            'end': end,
-        }
-        r = requests.post(search_url, headers=headers, json=payload, timeout=30)
-        r.raise_for_status()
-        d = r.json()
-        if d.get('error_code', 0) != 0:
-            raise ValueError(f'IMA API错误 [{d.get("error_code")}]: {d.get("error_msg", "未知错误")}')
-        return d.get('data', {}).get('docs', [])
-
-    # 多策略搜索：标题 → 正文 → 组合查询
-    docs = _ima_search(0, search_query)  # 策略1: 按标题搜索
-    if not docs:
-        docs = _ima_search(1, search_query)  # 策略2: 按正文搜索
-    if not docs and exam_type:
-        # 策略3: 用"检查类型+搜索词"组合搜索
-        combo_query = f'{exam_type} {search_query}'
-        docs = _ima_search(1, combo_query)
-    if not docs:
-        # 策略4: 提取搜索词中的核心词（去掉修饰语）
-        core_words = re.sub(r'[的了吗呢吧]', '', search_query).strip()
-        if core_words and core_words != search_query:
-            docs = _ima_search(1, core_words)
-
     doc_snapshots = []
     context_parts = []
 
-    # 获取每篇笔记的详细内容
-    doc_url = f'{api_url}/note/v1/get_doc_content'
-    for doc in docs[:8]:  # 增加到8篇
-        doc_info = doc.get('doc', {}).get('basic_info', {})
-        doc_id = doc_info.get('docid', '')
-        title = doc_info.get('title', '未知文档')
-        summary = doc_info.get('summary', '')
+    # ===== 优先使用知识库模块 (wiki/v1/search_knowledge) =====
+    kb_search_url = f'{api_url}/wiki/v1/search_knowledge'
+    kb_content_url = f'{api_url}/wiki/v1/get_item_content'
 
-        if not doc_id:
+    def _ima_kb_search(query_text, kb_id=''):
+        """在IMA知识库中搜索"""
+        payload = {'query': query_text, 'cursor': ''}
+        if kb_id:
+            payload['knowledge_base_id'] = kb_id
+        r = requests.post(kb_search_url, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        d = r.json()
+        if d.get('error_code', 0) != 0:
+            raise ValueError(f'IMA知识库API错误 [{d.get("error_code")}]: {d.get("error_msg", "未知错误")}')
+        # 知识库搜索结果格式: data.items 或 data.results
+        return d.get('data', {}).get('items', []) or d.get('data', {}).get('results', []) or d.get('data', {}).get('docs', [])
+
+    # 知识库搜索策略：疾病名 → 检查类型+疾病名 → 核心词
+    kb_items = []
+    try:
+        kb_items = _ima_kb_search(search_query, knowledge_base_id)
+        if not kb_items and exam_type:
+            kb_items = _ima_kb_search(f'{exam_type} {search_query}', knowledge_base_id)
+        if not kb_items:
+            core_words = re.sub(r'[的了吗呢吧]', '', search_query).strip()
+            if core_words and core_words != search_query:
+                kb_items = _ima_kb_search(core_words, knowledge_base_id)
+    except Exception:
+        kb_items = []  # 知识库模块失败，降级到笔记模块
+
+    # 获取知识库条目的详细内容
+    for item in kb_items[:8]:
+        item_id = item.get('item_id', '') or item.get('id', '') or item.get('doc_id', '')
+        title = item.get('title', '') or item.get('name', '') or '未知文档'
+        summary = item.get('summary', '') or item.get('snippet', '') or item.get('abstract', '')
+        url = item.get('url', '') or item.get('link', '') or item.get('source_url', '')
+        kb_name = item.get('knowledge_base_name', '') or item.get('kb_name', '')
+
+        if not item_id:
+            # 即使没有item_id，也用summary
+            if summary:
+                context_parts.append(f'【{title}】\n{summary}')
+                doc_snapshots.append({
+                    'doc_name': title,
+                    'page': '',
+                    'snippet': summary[:300] + ('...' if len(summary) > 300 else ''),
+                    'url': url,
+                    'source': f'腾讯IMA知识库{f"/{kb_name}" if kb_name else ""}',
+                })
             continue
 
-        snippet = ''
+        snippet = summary
         try:
-            doc_payload = {'doc_id': doc_id, 'target_content_format': 1}  # Markdown格式
-            doc_resp = requests.post(doc_url, headers=headers, json=doc_payload, timeout=15)
-            doc_resp.raise_for_status()
-            doc_data = doc_resp.json()
-
-            if doc_data.get('error_code', 0) == 0:
-                content = doc_data.get('data', {}).get('content', '')
+            content_resp = requests.post(kb_content_url, headers=headers,
+                                         json={'item_id': item_id}, timeout=15)
+            content_resp.raise_for_status()
+            content_data = content_resp.json()
+            if content_data.get('error_code', 0) == 0:
+                content = content_data.get('data', {}).get('content', '') or content_data.get('data', {}).get('text', '')
                 if content:
                     context_parts.append(f'【{title}】\n{content}')
                     snippet = content[:300] + ('...' if len(content) > 300 else '')
                 elif summary:
                     context_parts.append(f'【{title}】\n{summary}')
-                    snippet = summary[:300] + ('...' if len(summary) > 300 else '')
             elif summary:
                 context_parts.append(f'【{title}】\n{summary}')
-                snippet = summary[:300] + ('...' if len(summary) > 300 else '')
         except Exception:
             if summary:
                 context_parts.append(f'【{title}】\n{summary}')
-                snippet = summary[:300] + ('...' if len(summary) > 300 else '')
 
-        if snippet:
-            doc_snapshots.append({
-                'doc_name': title,
-                'page': '',
-                'snippet': snippet,
-                'url': f'ima://note/{doc_id}',
-                'source': '腾讯IMA知识库',
-            })
+        doc_snapshots.append({
+            'doc_name': title,
+            'page': '',
+            'snippet': snippet[:300] + ('...' if len(snippet) > 300 else '') if snippet else '',
+            'url': url,
+            'source': f'腾讯IMA知识库{f"/{kb_name}" if kb_name else ""}',
+        })
+
+    # ===== 降级：笔记模块 (note/v1/search_note_book) =====
+    if not doc_snapshots:
+        note_search_url = f'{api_url}/note/v1/search_note_book'
+        note_content_url = f'{api_url}/note/v1/get_doc_content'
+
+        def _ima_note_search(search_type, query_text, start=0, end=20):
+            payload = {
+                'search_type': search_type,
+                'query_info': {'title': query_text} if search_type == 0 else {'content': query_text},
+                'start': start, 'end': end,
+            }
+            r = requests.post(note_search_url, headers=headers, json=payload, timeout=30)
+            r.raise_for_status()
+            d = r.json()
+            if d.get('error_code', 0) != 0:
+                raise ValueError(f'IMA笔记API错误 [{d.get("error_code")}]: {d.get("error_msg", "未知错误")}')
+            return d.get('data', {}).get('docs', [])
+
+        docs = []
+        try:
+            docs = _ima_note_search(0, search_query)
+            if not docs:
+                docs = _ima_note_search(1, search_query)
+            if not docs and exam_type:
+                docs = _ima_note_search(1, f'{exam_type} {search_query}')
+        except Exception:
+            docs = []
+
+        for doc in docs[:8]:
+            doc_info = doc.get('doc', {}).get('basic_info', {})
+            doc_id = doc_info.get('docid', '')
+            title = doc_info.get('title', '未知文档')
+            summary = doc_info.get('summary', '')
+            if not doc_id:
+                continue
+            snippet = ''
+            try:
+                doc_resp = requests.post(note_content_url, headers=headers,
+                                         json={'doc_id': doc_id, 'target_content_format': 1}, timeout=15)
+                doc_resp.raise_for_status()
+                doc_data = doc_resp.json()
+                if doc_data.get('error_code', 0) == 0:
+                    content = doc_data.get('data', {}).get('content', '')
+                    if content:
+                        context_parts.append(f'【{title}】\n{content}')
+                        snippet = content[:300] + ('...' if len(content) > 300 else '')
+                    elif summary:
+                        context_parts.append(f'【{title}】\n{summary}')
+                        snippet = summary[:300] + ('...' if len(summary) > 300 else '')
+                elif summary:
+                    context_parts.append(f'【{title}】\n{summary}')
+                    snippet = summary[:300] + ('...' if len(summary) > 300 else '')
+            except Exception:
+                if summary:
+                    context_parts.append(f'【{title}】\n{summary}')
+                    snippet = summary[:300] + ('...' if len(summary) > 300 else '')
+            if snippet:
+                doc_snapshots.append({
+                    'doc_name': title,
+                    'page': '',
+                    'snippet': snippet,
+                    'url': f'ima://note/{doc_id}',
+                    'source': '腾讯IMA笔记',
+                })
 
     context = '\n\n'.join(context_parts)
     if not context:
@@ -824,13 +891,33 @@ def _query_volcengine_kb(kb_config, exam_type, keywords):
     if can_search:
         try:
             return _query_volcengine_search_kb(kb_config, exam_type, keywords)
-        except Exception as e:
+        except Exception as search_err:
             # search_knowledge失败，若有Responses API配置则降级
             if can_responses:
                 try:
                     return _query_volcengine_responses_kb(kb_config, exam_type, keywords)
-                except Exception:
-                    pass  # Responses API也失败，抛出原始错误
+                except Exception as resp_err:
+                    # 两种模式都失败，给出综合错误信息
+                    raise ValueError(
+                        f'火山方舟知识库两种模式均失败：\n'
+                        f'【search_knowledge模式】: {str(search_err)}\n'
+                        f'【Responses API模式】: {str(resp_err)}\n\n'
+                        f'建议：\n'
+                        f'- 若search_knowledge报"check sign error"，说明AK/SK无ark服务权限或凭证错误，'
+                        f'请到火山引擎控制台 → IAM访问控制 → 确认AK/SK有"ArkMaster/ArkUser"或知识库读取权限\n'
+                        f'- 也可改用Responses API模式：仅需API Key + 旗舰版知识库ID(Endpoint ID)，无需AK/SK签名'
+                    )
+            # 仅有search_knowledge模式，给出针对性提示
+            err_msg = str(search_err)
+            if 'check sign error' in err_msg or 'check sign not match' in err_msg:
+                raise ValueError(
+                    f'{err_msg}\n\n'
+                    f'【签名失败排查建议】：\n'
+                    f'1. 确认Access Key/Secret Key正确（火山引擎控制台 → IAM访问控制 → 访问密钥）\n'
+                    f'2. 确认AK/SK有ark服务权限（建议授予ArkMaster或ArkUser策略）\n'
+                    f'3. 确认已开通"知识库"服务并创建知识库（控制台 → 火山方舟 → 知识库）\n'
+                    f'4. 若仍失败，建议改用Responses API模式：配置API Key + 旗舰版知识库ID即可，无需AK/SK'
+                ) from search_err
             raise
     elif can_responses:
         return _query_volcengine_responses_kb(kb_config, exam_type, keywords)
@@ -1072,20 +1159,35 @@ def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
     url = 'https://ark.cn-beijing.volces.com/api/v3/responses'
 
     # 尝试新格式 knowledge_base_search，失败则降级为旧格式 knowledge_search
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    new_err = ''
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    if resp.status_code != 200:
+        try:
+            new_err = f'knowledge_base_search: HTTP {resp.status_code} - {resp.text[:200]}'
+        except Exception:
+            new_err = f'knowledge_base_search: HTTP {resp.status_code}'
+        # 尝试旧格式
+        old_payload = dict(payload)
+        old_payload['tools'] = [{
+            'type': 'knowledge_search',
+            'knowledge_resource_id': endpoint_id,
+            'limit': 5,
+            'ranking_options': {'get_attachment_link': True},
+        }]
+        resp = requests.post(url, headers=headers, json=old_payload, timeout=60)
         if resp.status_code != 200:
-            # 尝试旧格式
-            payload['tools'] = [{
-                'type': 'knowledge_search',
-                'knowledge_resource_id': endpoint_id,
-                'limit': 5,
-                'ranking_options': {'get_attachment_link': True},
-            }]
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-    except requests.exceptions.HTTPError:
-        resp.raise_for_status()
+            try:
+                old_err = f'knowledge_search: HTTP {resp.status_code} - {resp.text[:200]}'
+            except Exception:
+                old_err = f'knowledge_search: HTTP {resp.status_code}'
+            raise ValueError(
+                f'火山方舟Responses API两种工具格式均失败：\n【{new_err}】\n【{old_err}】\n\n'
+                f'建议：\n'
+                f'- 确认API Key有效（火山方舟控制台 → API Key管理）\n'
+                f'- 确认旗舰版知识库ID(Endpoint ID)正确（控制台 → 知识库 → 详情）\n'
+                f'- 确认API Key有访问该知识库的权限'
+            )
+    resp.raise_for_status()
     data = resp.json()
 
     doc_snapshots = []

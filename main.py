@@ -1607,23 +1607,31 @@ class _HelpDialog(QDialog):
 <tr><td style="color:#888890;">API地址</td><td>https://ima.qq.com/openapi</td></tr>
 <tr><td style="color:#888890;">认证方式</td><td>请求头认证：ima-openapi-clientid + ima-openapi-apikey</td></tr>
 <tr><td style="color:#888890;">获取凭证</td><td><a href="https://ima.qq.com/agent-interface" style="color:#3f7bf7;">https://ima.qq.com/agent-interface</a></td></tr>
-<tr><td style="color:#888890;">需要填写</td><td>Client ID 和 API Key（两个都要填）</td></tr>
-<tr><td style="color:#888890;">检索方式</td><td>先按标题搜索笔记，无结果时按正文搜索，最多获取5篇笔记内容</td></tr>
-<tr><td style="color:#888890;">配置步骤</td><td>访问IMA开放平台 → 登录并创建凭证 → 获取Client ID和API Key → 填入知识库配置</td></tr>
+<tr><td style="color:#888890;">需要填写</td><td>Client ID（必填）+ API Key（必填）+ 知识库ID（可选）</td></tr>
+<tr><td style="color:#888890;">检索方式</td><td>优先使用<b>知识库模块</b>（wiki/v1/search_knowledge），无结果时降级到<b>笔记模块</b>（note/v1/search_note_book）</td></tr>
+<tr><td style="color:#888890;">知识库ID</td><td>留空搜索全部知识库，填写则限定指定知识库（推荐填写以提高命中率）</td></tr>
+<tr><td style="color:#888890;">配置步骤</td><td>访问IMA开放平台 → 登录并创建凭证 → 获取Client ID和API Key → 在IMA中创建知识库并上传文档 → 获取知识库ID（可选） → 填入知识库配置</td></tr>
 </table>
-<p style="color:#888890; font-size:12px;">说明：IMA个人知识库中需提前导入医学影像诊断相关笔记/文档，检索结果取决于知识库内容。</p>
+<p style="color:#888890; font-size:12px;">说明：建议在IMA中创建专门的医学影像诊断知识库并上传相关文档/PDF，检索结果取决于知识库内容。检索策略：先用疾病名搜索，无结果时扩展为"检查类型+疾病名"，再用核心词兜底。</p>
 
 <h3 style="color:#5a91ff; margin-top:16px;">2. 火山方舟知识库</h3>
 <table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
 <tr><td style="color:#888890;">API地址</td><td>https://api-knowledgebase.mlp.cn-beijing.volces.com/api/knowledge/collection/search_knowledge</td></tr>
-<tr><td style="color:#888890;">认证方式</td><td>模式1: HMAC-SHA256签名(AK/SK) &nbsp;|&nbsp; 模式2: Bearer Token (API Key)</td></tr>
+<tr><td style="color:#888890;">认证方式</td><td>模式1: VOLC-V3-HMAC-SHA256签名(AK/SK) &nbsp;|&nbsp; 模式2: Bearer Token (API Key)</td></tr>
 <tr><td style="color:#888890;">获取AK/SK</td><td><a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">https://console.volcengine.com/iam/keymanage</a> → 密钥管理</td></tr>
 <tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
 </table>
-<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式（可同时配置，优先使用模式1）：</b></p>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式（可同时配置，优先使用模式1，失败自动降级到模式2）：</b></p>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。HMAC-SHA256签名认证，支持混合检索+重排序+上下文扩散，检索精度更高。</li>
-<li><b>模式2 Responses API</b>：需填写 API Key + 旗舰版知识库ID(Endpoint ID)。Bearer Token认证，通过大模型自动调用知识库。</li>
+<li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。采用 <b>VOLC-V3-HMAC-SHA256</b> 签名（服务: ark，区域: cn-north-1），支持混合检索+重排序+上下文扩散，检索精度更高。系统会依次尝试VOLC-V3签名和SDK SignerV4签名。</li>
+<li><b>模式2 Responses API</b>：需填写 API Key + 旗舰版知识库ID(Endpoint ID)。Bearer Token认证，无需AK/SK签名，通过大模型自动调用知识库。支持 knowledge_base_search（新）和 knowledge_search（旧）两种工具格式。</li>
+</ul>
+<p style="color:#888890; font-size:12px;"><b style="color:#f59e0b;">签名失败排查（HTTP 403 "check sign error"）：</b></p>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li>确认AK/SK正确（IAM访问控制 → 访问密钥）</li>
+<li>确认AK/SK有ark服务权限（建议授予ArkMaster或ArkUser策略）</li>
+<li>确认已开通"知识库"服务并创建知识库（火山方舟控制台 → 知识库）</li>
+<li>若AK/SK权限申请困难，建议直接使用模式2（Responses API），仅需API Key即可</li>
 </ul>
 <p style="color:#888890; font-size:12px;">配置步骤：注册火山引擎 → 获取AK/SK（IAM密钥管理） → 开通方舟知识库服务 → 创建知识库并上传文档 → 获取Resource ID → 填入知识库配置</p>
 
@@ -1723,7 +1731,10 @@ class _KBConfigDialog(QDialog):
         self.tencent_secret_key.setText(tencent_cfg.get('secret_key', '') or tencent_cfg.get('api_key_secret', ''))
         self.tencent_secret_key.setPlaceholderText('IMA API Key')
         tencent_layout.addRow('API Key:', self.tencent_secret_key)
-        tencent_hint = QLabel('使用腾讯IMA个人知识库 OpenAPI。\n在 https://ima.qq.com/agent-interface 获取 Client ID 和 API Key。\n搜索IMA笔记中的医学影像诊断相关内容。')
+        self.tencent_kb_id = QLineEdit(tencent_cfg.get('knowledge_base_id', ''))
+        self.tencent_kb_id.setPlaceholderText('知识库ID (可选, 留空则搜索全部知识库)')
+        tencent_layout.addRow('知识库ID:', self.tencent_kb_id)
+        tencent_hint = QLabel('使用腾讯IMA个人知识库 OpenAPI。\n在 https://ima.qq.com/agent-interface 获取 Client ID 和 API Key。\n优先使用知识库模块(wiki/v1/search_knowledge)检索，无结果时降级到笔记模块(search_note_book)。\n知识库ID可在IMA知识库管理页面获取，留空则搜索全部知识库。')
         tencent_hint.setStyleSheet("color: #666670; font-size: 11px;")
         tencent_hint.setWordWrap(True)
         tencent_layout.addRow(tencent_hint)
@@ -1817,6 +1828,7 @@ class _KBConfigDialog(QDialog):
                 'type': 'tencent',
                 'api_key': self.tencent_api_key.text().strip(),
                 'secret_key': self.tencent_secret_key.text().strip(),
+                'knowledge_base_id': self.tencent_kb_id.text().strip(),
             }
         elif kb_type == 'volcengine':
             kb_config = {
@@ -1865,6 +1877,7 @@ class _KBConfigDialog(QDialog):
             'type': 'tencent',
             'api_key': self.tencent_api_key.text().strip(),
             'secret_key': self.tencent_secret_key.text().strip(),
+            'knowledge_base_id': self.tencent_kb_id.text().strip(),
         }
         config['knowledge_bases']['volcengine'] = {
             'type': 'volcengine',
