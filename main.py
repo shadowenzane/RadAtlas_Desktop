@@ -991,7 +991,7 @@ class AIDiagnosisDialog(QDialog):
         # 检查类型
         param_layout.addWidget(QLabel('检查类型:'), 0, 0)
         self.exam_combo = QComboBox()
-        self.exam_combo.addItems(['CT', 'X-Ray', 'MRI', 'PET-CT', '超声', 'DSA'])
+        self.exam_combo.addItems(['CT', 'X-Ray', 'MRI', 'PET-CT', '超声', 'DSA', 'ECG(心电图)'])
         self.exam_combo.setFixedWidth(120)
         param_layout.addWidget(self.exam_combo, 0, 1)
 
@@ -2070,13 +2070,14 @@ class _KBSnippetViewer(QDialog):
                 local_path = local_paths.get(i)
                 if local_path:
                     img_src = QUrl.fromLocalFile(local_path).toString()
-                    html += f'<div style="margin-bottom:20px; text-align:center;">'
-                    html += f'<img src="{img_src}" style="max-width:100%; border:2px solid #2a2a30; '
-                    html += 'border-radius:8px; margin:8px 0;" />'
+                    html += f'<div style="margin-bottom:24px; text-align:center; page-break-inside:avoid;">'
+                    html += f'<img src="{img_src}" style="max-width:100%; max-height:600px; '
+                    html += 'border:1px solid #3a3a40; border-radius:6px; margin:8px 0; '
+                    html += 'box-shadow:0 2px 8px rgba(0,0,0,0.3);" />'
                     if caption:
-                        html += f'<p style="color:#888890; font-size:12px; margin-top:4px;">{caption}</p>'
+                        html += f'<p style="color:#888890; font-size:12px; margin-top:6px;">{caption}</p>'
                     else:
-                        html += f'<p style="color:#666670; font-size:11px; margin-top:4px;">图 {i+1}</p>'
+                        html += f'<p style="color:#666670; font-size:11px; margin-top:6px;">图 {i+1}</p>'
                     html += '</div>'
                 else:
                     html += f'<div style="margin-bottom:20px; text-align:center; padding:40px; '
