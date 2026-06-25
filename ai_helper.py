@@ -929,57 +929,70 @@ def _query_volcengine_kb(kb_config, exam_type, keywords):
         )
 
 
-def _volc_v3_sign(method, path, ak, sk, body, host):
-    """生成火山方舟 VOLC-V3-HMAC-SHA256 签名请求头
+def _volc_hmac_sign(method, path, ak, sk, body, host, service='air', region='cn-beijing'):
+    """生成火山方舟 HMAC-SHA256 签名请求头（与官方SDK SignerV4完全一致）
 
-    根据火山方舟知识库API签名规范：
-    - 算法: VOLC-V3-HMAC-SHA256
-    - 服务: ark
-    - 区域: cn-north-1
-    - 派生密钥最终步: volc_request (非 request)
-    - SK无前缀 (非 "VOLC"+SK)
-    - 签名头: host;x-date (不含 content-type/x-content-sha256)
+    实测验证：service=air, region=cn-beijing 是知识库API的正确签名参数。
+    算法与 volcengine.auth.SignerV4.sign 完全一致，作为SDK不可用时的降级方案。
+
+    Args:
+        service: 服务名，知识库用 'air'（实测正确）
+        region: 区域，知识库用 'cn-beijing'（实测正确）
     """
-    now = datetime.datetime.utcnow()
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.timezone.utc)
     x_date = now.strftime('%Y%m%dT%H%M%SZ')
-    short_date = now.strftime('%Y%m%d')
+    short_date = x_date[:8]
 
     # 请求体哈希
-    body_bytes = body.encode('utf-8') if isinstance(body, str) else body
-    payload_hash = hashlib.sha256(body_bytes).hexdigest()
+    body_hash = hashlib.sha256(body.encode('utf-8')).hexdigest()
 
-    # 规范化请求头（仅 host 和 x-date 参与签名）
-    canonical_headers = f'host:{host}\nx-date:{x_date}\n'
-    signed_headers = 'host;x-date'
+    # 签名的请求头：Content-Type, Content-Md5, Host, 以及所有 X-* 开头的头
+    # 与 SDK SignerV4.hashed_canonical_request_v4 逻辑一致
+    signed_headers_map = {
+        'content-type': 'application/json',
+        'host': host,
+        'x-content-sha256': body_hash,
+        'x-date': x_date,
+    }
 
-    # 构建规范化请求
-    canonical_request = f'{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
+    # 构建规范化请求头字符串（按key排序，每行 key:value\n）
+    signed_str = ''
+    for key in sorted(signed_headers_map.keys()):
+        signed_str += f'{key}:{signed_headers_map[key]}\n'
+
+    signed_headers = ';'.join(sorted(signed_headers_map.keys()))
+
+    # 构建规范化请求（与 SDK 完全一致）
+    # '\n'.join([method, path, query, signed_str, signed_headers, body_hash])
+    # query 为空字符串
+    canonical_request = '\n'.join([method, path, '', signed_str, signed_headers, body_hash])
 
     # 签名范围
-    credential_scope = f'{short_date}/cn-north-1/ark/volc_request'
+    credential_scope = f'{short_date}/{region}/{service}/request'
 
     # 待签名字符串
     hashed_canonical_request = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
-    string_to_sign = f'VOLC-V3-HMAC-SHA256\n{x_date}\n{credential_scope}\n{hashed_canonical_request}'
+    string_to_sign = '\n'.join(['HMAC-SHA256', x_date, credential_scope, hashed_canonical_request])
 
-    # 派生签名密钥: SK → date → region → service → volc_request (无VOLC前缀)
+    # 派生签名密钥（与 SDK get_signing_secret_key_v4 一致）
+    # SK → date → region → service → 'request'
     k_date = hmac.new(sk.encode('utf-8'), short_date.encode('utf-8'), hashlib.sha256).digest()
-    k_region = hmac.new(k_date, b'cn-north-1', hashlib.sha256).digest()
-    k_service = hmac.new(k_region, b'ark', hashlib.sha256).digest()
-    k_signing = hmac.new(k_service, b'volc_request', hashlib.sha256).digest()
+    k_region = hmac.new(k_date, region.encode('utf-8'), hashlib.sha256).digest()
+    k_service = hmac.new(k_region, service.encode('utf-8'), hashlib.sha256).digest()
+    k_signing = hmac.new(k_service, b'request', hashlib.sha256).digest()
 
     # 计算签名
     signature = hmac.new(k_signing, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
 
-    # 构建Authorization头
-    authorization = (
-        f'VOLC-V3-HMAC-SHA256 Credential={ak}/{credential_scope}, '
-        f'SignedHeaders={signed_headers}, Signature={signature}'
-    )
+    # 构建Authorization头（与 SDK build_auth_header_v4 一致）
+    authorization = f'HMAC-SHA256 Credential={ak}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}'
 
     return {
         'Content-Type': 'application/json',
         'Host': host,
+        'X-Content-Sha256': body_hash,
         'X-Date': x_date,
         'Authorization': authorization,
     }
@@ -988,8 +1001,9 @@ def _volc_v3_sign(method, path, ak, sk, body, host):
 def _query_volcengine_search_kb(kb_config, exam_type, keywords):
     """使用 search_knowledge API 查询火山方舟知识库（HMAC-SHA256签名认证）
 
-    优先使用 volcengine SDK 的 SignerV4 进行签名（官方实现，可靠性高）。
-    若 SDK 不可用，降级为手动 HMAC-SHA256 签名。
+    签名参数（实测验证）：service=air, region=cn-beijing, algorithm=HMAC-SHA256
+    优先使用 volcengine SDK 的 SignerV4 签名，SDK不可用时降级为手动签名。
+    仅当返回403签名错误时才尝试下一种签名方式；其他错误（400等）说明签名通过。
     """
     access_key = kb_config.get('access_key', '') or kb_config.get('ak', '')
     secret_key = kb_config.get('secret_key', '') or kb_config.get('sk', '')
@@ -1027,21 +1041,19 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
     body = json.dumps(payload, ensure_ascii=False)
 
     # 尝试多种签名方式，直到成功
-    # 方式1: VOLC-V3-HMAC-SHA256 (ark/cn-north-1/volc_request) — 豆包确认的正确参数
-    # 方式2: SDK SignerV4 (ark/cn-north-1) — SDK签名
-    # 方式3: SDK SignerV4 (air/cn-beijing) — 旧参数兼容
+    # 实测验证：service=air, region=cn-beijing 是知识库API的正确签名参数
+    # （返回400参数错误而非403签名错误，说明签名通过）
+    # 注意：ark/cn-north-1 和 VOLC-V3-HMAC-SHA256 均返回403签名错误，不可用
     sign_attempts = []
 
-    # 方式1: 手动VOLC-V3签名
-    sign_attempts.append(('VOLC-V3', _volc_v3_sign('POST', path, access_key, secret_key, body, host)))
-
-    # 方式2/3: SDK签名
+    # 方式1: SDK SignerV4 (air/cn-beijing) — 实测正确的签名参数
+    # 方式2: SDK SignerV4 (ark/cn-north-1) — 备用
     try:
         from volcengine.auth.SignerV4 import SignerV4
         from volcengine.base.Request import Request
         from volcengine.Credentials import Credentials
 
-        for svc, reg in [('ark', 'cn-north-1'), ('air', 'cn-beijing')]:
+        for svc, reg in [('air', 'cn-beijing'), ('ark', 'cn-north-1')]:
             req = Request()
             req.set_shema('https')
             req.set_method('POST')
@@ -1060,22 +1072,44 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
     except ImportError:
         pass
 
+    # 方式3: 手动HMAC-SHA256签名 (air/cn-beijing/request) — SDK不可用时的降级方案
+    sign_attempts.append(('HMAC-SHA256(air/cn-beijing)', _volc_hmac_sign('POST', path, access_key, secret_key, body, host)))
+
     last_error = ''
+    data = None
     for sign_name, headers in sign_attempts:
         try:
             resp = requests.post(url, headers=headers, data=body.encode('utf-8'), timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
                 break
-            # 记录错误，尝试下一种签名方式
+            # 解析错误
             try:
                 err_data = resp.json()
-                last_error = f'{sign_name}: HTTP {resp.status_code} - {json.dumps(err_data, ensure_ascii=False)[:200]}'
+                err_msg = err_data.get('message', '') or err_data.get('Message', '')
+                err_code = err_data.get('code', 0) or err_data.get('Code', 0)
             except Exception:
-                last_error = f'{sign_name}: HTTP {resp.status_code} - {resp.text[:200]}'
-        except Exception as e:
+                err_msg = resp.text[:200]
+                err_code = 0
+
+            # 403 = 签名错误，尝试下一种签名方式
+            # 其他错误（400/500等）= 签名通过但请求有问题，直接抛出
+            if resp.status_code == 403:
+                last_error = f'{sign_name}: HTTP {resp.status_code} - {err_msg}'
+                continue
+            else:
+                # 签名通过，但是业务错误（如缺少collection_name/resource_id）
+                if 'collection not specified' in err_msg:
+                    raise ValueError(
+                        f'火山方舟知识库缺少知识库标识。请在知识库配置中填写 Resource ID 或 集合名称。\n'
+                        f'（签名已通过验证，凭证有效）'
+                    )
+                raise ValueError(f'火山方舟知识库API错误 [HTTP {resp.status_code}, code={err_code}]: {err_msg}')
+        except requests.exceptions.RequestException as e:
             last_error = f'{sign_name}: {str(e)}'
-    else:
+            continue
+
+    if data is None:
         raise ValueError(f'火山方舟知识库所有签名方式均失败。最后错误: {last_error}')
 
     # 检查API错误

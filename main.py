@@ -1617,20 +1617,20 @@ class _HelpDialog(QDialog):
 <h3 style="color:#5a91ff; margin-top:16px;">2. 火山方舟知识库</h3>
 <table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
 <tr><td style="color:#888890;">API地址</td><td>https://api-knowledgebase.mlp.cn-beijing.volces.com/api/knowledge/collection/search_knowledge</td></tr>
-<tr><td style="color:#888890;">认证方式</td><td>模式1: VOLC-V3-HMAC-SHA256签名(AK/SK) &nbsp;|&nbsp; 模式2: Bearer Token (API Key)</td></tr>
+<tr><td style="color:#888890;">认证方式</td><td>模式1: HMAC-SHA256签名(AK/SK, service=air, region=cn-beijing) &nbsp;|&nbsp; 模式2: Bearer Token (API Key)</td></tr>
 <tr><td style="color:#888890;">获取AK/SK</td><td><a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">https://console.volcengine.com/iam/keymanage</a> → 密钥管理</td></tr>
 <tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
 </table>
 <p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式（可同时配置，优先使用模式1，失败自动降级到模式2）：</b></p>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。采用 <b>VOLC-V3-HMAC-SHA256</b> 签名（服务: ark，区域: cn-north-1），支持混合检索+重排序+上下文扩散，检索精度更高。系统会依次尝试VOLC-V3签名和SDK SignerV4签名。</li>
+<li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。采用 <b>HMAC-SHA256签名</b>（service: air，region: cn-beijing），支持混合检索+重排序+上下文扩散，检索精度更高。<b>Resource ID</b> 在火山方舟控制台 → 知识库详情页获取。</li>
 <li><b>模式2 Responses API</b>：需填写 API Key + 旗舰版知识库ID(Endpoint ID)。Bearer Token认证，无需AK/SK签名，通过大模型自动调用知识库。支持 knowledge_base_search（新）和 knowledge_search（旧）两种工具格式。</li>
 </ul>
-<p style="color:#888890; font-size:12px;"><b style="color:#f59e0b;">签名失败排查（HTTP 403 "check sign error"）：</b></p>
+<p style="color:#888890; font-size:12px;"><b style="color:#f59e0b;">常见问题：</b></p>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li>确认AK/SK正确（IAM访问控制 → 访问密钥）</li>
-<li>确认AK/SK有ark服务权限（建议授予ArkMaster或ArkUser策略）</li>
-<li>确认已开通"知识库"服务并创建知识库（火山方舟控制台 → 知识库）</li>
+<li><b>HTTP 403 "check sign error"</b>：AK/SK凭证错误或无权限，请确认IAM密钥正确</li>
+<li><b>HTTP 400 "collection not exist"</b>：签名通过但Resource ID/集合名称不存在，请到火山方舟控制台 → 知识库获取正确的Resource ID</li>
+<li><b>HTTP 400 "collection not specified"</b>：未填写Resource ID或集合名称，请补充配置</li>
 <li>若AK/SK权限申请困难，建议直接使用模式2（Responses API），仅需API Key即可</li>
 </ul>
 <p style="color:#888890; font-size:12px;">配置步骤：注册火山引擎 → 获取AK/SK（IAM密钥管理） → 开通方舟知识库服务 → 创建知识库并上传文档 → 获取Resource ID → 填入知识库配置</p>
