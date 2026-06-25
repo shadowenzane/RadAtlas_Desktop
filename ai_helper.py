@@ -806,7 +806,9 @@ def _query_volcengine_kb(kb_config, exam_type, keywords):
 
     自动选择检索模式：
     1. search_knowledge API（需AK/SK + Resource ID或集合名称）— HMAC-SHA256签名认证，混合检索+重排序
-    2. Responses API + knowledge_search 工具（需API Key + Endpoint ID）— Bearer认证，旗舰版知识库
+    2. Responses API + knowledge_base_search 工具（需API Key + Endpoint ID）— Bearer认证，旗舰版知识库
+
+    若search_knowledge失败且配置了Responses API，自动降级到模式2。
     """
     api_key = kb_config.get('api_key', '')
     access_key = kb_config.get('access_key', '') or kb_config.get('ak', '')
@@ -820,7 +822,16 @@ def _query_volcengine_kb(kb_config, exam_type, keywords):
     can_responses = bool(api_key and endpoint_id)
 
     if can_search:
-        return _query_volcengine_search_kb(kb_config, exam_type, keywords)
+        try:
+            return _query_volcengine_search_kb(kb_config, exam_type, keywords)
+        except Exception as e:
+            # search_knowledge失败，若有Responses API配置则降级
+            if can_responses:
+                try:
+                    return _query_volcengine_responses_kb(kb_config, exam_type, keywords)
+                except Exception:
+                    pass  # Responses API也失败，抛出原始错误
+            raise
     elif can_responses:
         return _query_volcengine_responses_kb(kb_config, exam_type, keywords)
     else:
@@ -834,7 +845,8 @@ def _query_volcengine_kb(kb_config, exam_type, keywords):
 def _query_volcengine_search_kb(kb_config, exam_type, keywords):
     """使用 search_knowledge API 查询火山方舟知识库（HMAC-SHA256签名认证）
 
-    混合检索 + 重排序 + 上下文扩散，检索精度高。
+    优先使用 volcengine SDK 的 SignerV4 进行签名（官方实现，可靠性高）。
+    若 SDK 不可用，降级为手动 HMAC-SHA256 签名。
     """
     access_key = kb_config.get('access_key', '') or kb_config.get('ak', '')
     secret_key = kb_config.get('secret_key', '') or kb_config.get('sk', '')
@@ -871,12 +883,46 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
 
     body = json.dumps(payload, ensure_ascii=False)
 
-    # 生成HMAC-SHA256签名请求头
-    headers = _volc_sign_request('POST', path, access_key, secret_key, body, host)
+    # 优先使用 volcengine SDK 签名（官方实现）
+    try:
+        from volcengine.auth.SignerV4 import SignerV4
+        from volcengine.base.Request import Request
+        from volcengine.Credentials import Credentials
+
+        req = Request()
+        req.set_shema('https')
+        req.set_method('POST')
+        req.set_connection_timeout(10)
+        req.set_socket_timeout(30)
+        req.set_headers({
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+        })
+        req.set_path(path)
+        req.set_body(body)
+        credentials = Credentials(access_key, secret_key, 'air', 'cn-beijing')
+        SignerV4.sign(req, credentials)
+        headers = dict(req.headers)
+    except ImportError:
+        # SDK 不可用，降级为手动签名
+        headers = _volc_sign_request('POST', path, access_key, secret_key, body, host)
 
     resp = requests.post(url, headers=headers, data=body.encode('utf-8'), timeout=30)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        # 显示完整错误信息以便诊断
+        error_text = ''
+        try:
+            error_data = resp.json()
+            error_text = json.dumps(error_data, ensure_ascii=False)[:500]
+        except Exception:
+            error_text = resp.text[:500]
+        raise ValueError(f'火山方舟知识库HTTP {resp.status_code}: {error_text}')
     data = resp.json()
+
+    # 检查API错误
+    if data.get('code', 0) != 0 and data.get('ResponseMetadata', {}).get('Error', {}).get('Code'):
+        err = data['ResponseMetadata']['Error']
+        raise ValueError(f'火山方舟API错误 [{err.get("Code")}]: {err.get("Message", "")}')
 
     # 解析检索结果（响应格式: data.result_list）
     doc_snapshots = []
@@ -914,9 +960,10 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
 
 
 def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
-    """使用火山方舟 Responses API + knowledge_search 工具查询知识库
+    """使用火山方舟 Responses API + knowledge_base_search 工具查询知识库
 
-    适用于旗舰版知识库，通过 endpoint_id (knowledge_resource_id) 调用。
+    适用于旗舰版知识库，通过 endpoint_id / knowledge_base_id 调用。
+    支持 knowledge_base_search（新）和 knowledge_search（旧）两种工具类型。
     """
     api_key = kb_config.get('api_key', '')
     endpoint_id = kb_config.get('endpoint_id', '')
@@ -927,38 +974,52 @@ def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
         'ark-beta-knowledge-search': 'true',
     }
 
+    # 构建医学检索提示词
+    search_prompt = f'检查类型：{exam_type}\n关键征象：{keywords}\n请从知识库中检索相关疾病的影像学表现、诊断标准和鉴别诊断要点。'
+
     payload = {
         'model': 'doubao-seed-1-6-251015',
         'stream': False,
         'thinking': {'type': 'disabled'},
         'tools': [
             {
-                'type': 'knowledge_search',
-                'knowledge_resource_id': endpoint_id,
-                'limit': 5,
-                'ranking_options': {
-                    'get_attachment_link': True,
-                },
+                'type': 'knowledge_base_search',
+                'knowledge_base_id': endpoint_id,
+                'top_k': 5,
             }
         ],
         'input': [
             {
                 'role': 'user',
-                'content': [{'type': 'input_text', 'text': keywords}]
+                'content': [{'type': 'input_text', 'text': search_prompt}]
             }
         ],
         'max_tool_calls': 1,
     }
 
     url = 'https://ark.cn-beijing.volces.com/api/v3/responses'
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
+
+    # 尝试新格式 knowledge_base_search，失败则降级为旧格式 knowledge_search
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        if resp.status_code != 200:
+            # 尝试旧格式
+            payload['tools'] = [{
+                'type': 'knowledge_search',
+                'knowledge_resource_id': endpoint_id,
+                'limit': 5,
+                'ranking_options': {'get_attachment_link': True},
+            }]
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError:
+        resp.raise_for_status()
     data = resp.json()
 
     doc_snapshots = []
     context_parts = []
 
-    # 从 output 中提取文本
+    # 从 output 中提取文本和检索结果
     output_list = data.get('output', [])
     for item in output_list:
         if item.get('type') == 'message':
@@ -968,13 +1029,14 @@ def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
         # 从 tool_call 结果中提取检索到的文档
         if item.get('type') == 'tool_call':
             for c in item.get('content', []):
-                if c.get('type') == 'knowledge_search_result':
+                # 兼容 knowledge_search_result 和 knowledge_base_search_result
+                if 'search_result' in c.get('type', ''):
                     results = c.get('results', [])
                     for r in results:
                         doc_name = r.get('title', '') or r.get('doc_name', '未知文档')
                         content = r.get('content', '') or r.get('text', '')
                         url = r.get('url', '') or r.get('attachment_link', '')
-                        snippet = content[:200] + ('...' if len(content) > 200 else '') if content else ''
+                        snippet = content[:300] + ('...' if len(content) > 300 else '') if content else ''
                         if content:
                             context_parts.append(content)
                         doc_snapshots.append({
@@ -987,7 +1049,7 @@ def _query_volcengine_responses_kb(kb_config, exam_type, keywords):
 
     context = '\n'.join(context_parts)
     if not context:
-        raise ValueError(f'火山方舟知识库(Responses API)返回空结果，原始响应: {json.dumps(data, ensure_ascii=False)[:200]}')
+        raise ValueError(f'火山方舟知识库(Responses API)返回空结果，原始响应: {json.dumps(data, ensure_ascii=False)[:300]}')
 
     return context, doc_snapshots
 
