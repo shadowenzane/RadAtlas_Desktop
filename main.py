@@ -1074,24 +1074,60 @@ class AIDiagnosisDialog(QDialog):
 
         # ── 结果展示区 ──
         self.result_splitter = QSplitter(Qt.Horizontal)
-        # 左侧：诊断条目列表（按大模型分列）
+        # 左侧：诊断条目列表（按大模型分列）— 包裹在 QScrollArea 中支持滚动
         self.result_list_panel = QWidget()
-        self.result_list_layout = QVBoxLayout(self.result_list_panel)
-        self.result_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.result_list_layout.setSpacing(4)
+        outer_list_layout = QVBoxLayout(self.result_list_panel)
+        outer_list_layout.setContentsMargins(0, 0, 0, 0)
+        outer_list_layout.setSpacing(4)
         self.result_list_label = QLabel('诊断条目')
         self.result_list_label.setStyleSheet("color: #888890; font-size: 12px; font-weight: bold;")
-        self.result_list_layout.addWidget(self.result_list_label)
+        outer_list_layout.addWidget(self.result_list_label)
+        self.result_list_scroll = QScrollArea()
+        self.result_list_scroll.setWidgetResizable(True)
+        self.result_list_scroll.setFrameShape(QFrame.NoFrame)
+        self.result_list_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background: transparent;")
+        self.result_list_layout = QVBoxLayout(scroll_content)
+        self.result_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.result_list_layout.setSpacing(4)
         self.result_list_layout.addWidget(QLabel('请输入关键字后点击"开始查询"'))
+        self.result_list_scroll.setWidget(scroll_content)
+        outer_list_layout.addWidget(self.result_list_scroll)
         self.result_splitter.addWidget(self.result_list_panel)
 
         # 右侧：诊断详情
         self.detail_panel = QWidget()
         detail_layout = QVBoxLayout(self.detail_panel)
         detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(4)
+        # 详情工具栏（缩放 + 收藏）
+        detail_toolbar = QHBoxLayout()
+        detail_toolbar.setContentsMargins(0, 0, 0, 0)
         detail_label = QLabel('诊断详情')
         detail_label.setStyleSheet("color: #888890; font-size: 12px; font-weight: bold;")
-        detail_layout.addWidget(detail_label)
+        detail_toolbar.addWidget(detail_label)
+        detail_toolbar.addStretch()
+        self._detail_font_size = 13
+        zoom_in_btn = QPushButton('＋')
+        zoom_in_btn.setFixedSize(28, 24)
+        zoom_in_btn.setToolTip('放大字体')
+        zoom_in_btn.setStyleSheet("QPushButton { font-size:14px; font-weight:bold; padding:0; }")
+        zoom_in_btn.clicked.connect(lambda checked=False: self._zoom_detail(1))
+        detail_toolbar.addWidget(zoom_in_btn)
+        zoom_out_btn = QPushButton('－')
+        zoom_out_btn.setFixedSize(28, 24)
+        zoom_out_btn.setToolTip('缩小字体')
+        zoom_out_btn.setStyleSheet("QPushButton { font-size:14px; font-weight:bold; padding:0; }")
+        zoom_out_btn.clicked.connect(lambda checked=False: self._zoom_detail(-1))
+        detail_toolbar.addWidget(zoom_out_btn)
+        self.fav_btn = QPushButton('☆ 收藏')
+        self.fav_btn.setFixedHeight(24)
+        self.fav_btn.setToolTip('收藏当前文档')
+        self.fav_btn.setStyleSheet("QPushButton { font-size:11px; padding:2px 8px; }")
+        self.fav_btn.clicked.connect(self._toggle_favorite)
+        detail_toolbar.addWidget(self.fav_btn)
+        detail_layout.addLayout(detail_toolbar)
         self.detail_browser = QTextBrowser()
         self.detail_browser.setOpenExternalLinks(True)
         self.detail_browser.setStyleSheet("""
@@ -1102,6 +1138,11 @@ class AIDiagnosisDialog(QDialog):
         detail_layout.addWidget(self.detail_browser)
         self.result_splitter.addWidget(self.detail_panel)
         self.result_splitter.setSizes([400, 600])
+
+        # 初始化收藏状态
+        self._current_kb_doc = None
+        self._detail_font_size = 13
+        self.fav_btn.setEnabled(False)
 
         content_layout.addWidget(self.result_splitter, stretch=1)
 
@@ -1212,14 +1253,12 @@ class AIDiagnosisDialog(QDialog):
             QMessageBox.warning(self, '知识库查询失败',
                 f'{kb_type_name}查询失败：\n{kb_errors[0]}\n\n诊断结果仍已显示，但未包含知识库参考文档。')
 
-        # 清空结果列表（保留result_list_label）
+        # 清空结果列表（result_list_label 已在外层布局，无需保留）
         while self.result_list_layout.count():
             item = self.result_list_layout.takeAt(0)
             w = item.widget()
-            if w and w is not self.result_list_label:
+            if w:
                 w.deleteLater()
-
-        self.result_list_layout.addWidget(self.result_list_label)
 
         # 按大模型分列显示结果
         for provider_name, result in provider_results.items():
@@ -1303,6 +1342,8 @@ class AIDiagnosisDialog(QDialog):
 
     def _show_detail(self, data, provider_name):
         """显示诊断详情"""
+        self._current_kb_doc = None
+        self._update_fav_btn()
         fields = [
             ('disease_name', '疾病名称'),
             ('confidence', '置信度'),
@@ -1441,7 +1482,75 @@ class AIDiagnosisDialog(QDialog):
             html += '</div>'
 
         html += '</div>'
+        self._current_kb_doc = doc
+        self._update_fav_btn()
         self.detail_browser.setHtml(html)
+
+    def _zoom_detail(self, delta):
+        """放大/缩小详情字体"""
+        self._detail_font_size = max(8, min(28, self._detail_font_size + delta))
+        self.detail_browser.setStyleSheet(f"""
+            QTextBrowser {{ background: #1a1a1e; border: 1px solid #2a2a30;
+                          border-radius: 6px; color: #d0d0d4; padding: 12px;
+                          font-size: {self._detail_font_size}px; }}
+        """)
+
+    def _toggle_favorite(self, checked=False):
+        """收藏/取消收藏当前知识库文档"""
+        doc = getattr(self, '_current_kb_doc', None)
+        if not doc:
+            return
+        favorites = self._load_favorites()
+        doc_key = f"{doc.get('doc_name', '')}|{doc.get('page', '')}|{doc.get('snippet', '')[:50]}"
+        if doc_key in favorites:
+            del favorites[doc_key]
+        else:
+            favorites[doc_key] = {
+                'doc_name': doc.get('doc_name', ''),
+                'page': doc.get('page', ''),
+                'snippet': doc.get('snippet', ''),
+                'url': doc.get('url', ''),
+                'source': doc.get('source', ''),
+            }
+        self._save_favorites(favorites)
+        self._update_fav_btn()
+
+    def _update_fav_btn(self):
+        """更新收藏按钮状态"""
+        doc = getattr(self, '_current_kb_doc', None)
+        if not doc:
+            self.fav_btn.setText('☆ 收藏')
+            self.fav_btn.setEnabled(False)
+            return
+        self.fav_btn.setEnabled(True)
+        favorites = self._load_favorites()
+        doc_key = f"{doc.get('doc_name', '')}|{doc.get('page', '')}|{doc.get('snippet', '')[:50]}"
+        if doc_key in favorites:
+            self.fav_btn.setText('★ 已收藏')
+        else:
+            self.fav_btn.setText('☆ 收藏')
+
+    def _load_favorites(self):
+        """加载收藏的知识库文档"""
+        import json as _json
+        fav_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kb_favorites.json')
+        if os.path.exists(fav_path):
+            try:
+                with open(fav_path, 'r', encoding='utf-8') as f:
+                    return _json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+    def _save_favorites(self, favorites):
+        """保存收藏的知识库文档"""
+        import json as _json
+        fav_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kb_favorites.json')
+        try:
+            with open(fav_path, 'w', encoding='utf-8') as f:
+                _json.dump(favorites, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _show_kb_config(self, checked=False):
         """显示知识库配置"""
@@ -1610,8 +1719,20 @@ class _HelpDialog(QDialog):
 <tr><td style="color:#888890;">需要填写</td><td>Client ID（必填）+ API Key（必填）+ 知识库ID（可选）</td></tr>
 <tr><td style="color:#888890;">检索方式</td><td>优先使用<b>知识库模块</b>（wiki/v1/search_knowledge），无结果时降级到<b>笔记模块</b>（note/v1/search_note_book）</td></tr>
 <tr><td style="color:#888890;">知识库ID</td><td>留空搜索全部知识库，填写则限定指定知识库（推荐填写以提高命中率）</td></tr>
-<tr><td style="color:#888890;">配置步骤</td><td>访问IMA开放平台 → 登录并创建凭证 → 获取Client ID和API Key → 在IMA中创建知识库并上传文档 → 获取知识库ID（可选） → 填入知识库配置</td></tr>
 </table>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">凭证获取详细步骤：</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>访问 <a href="https://ima.qq.com" style="color:#3f7bf7;">https://ima.qq.com</a> → 登录腾讯IMA</li>
+<li>点击右上角头像 → 进入 <a href="https://ima.qq.com/agent-interface" style="color:#3f7bf7;">开放平台/Agent接口</a> 页面</li>
+<li>创建API应用凭证，获取以下两个值（对应配置对话框中的字段）：
+  <ul>
+  <li><b>Client ID</b> → 填入"Client ID"输入框</li>
+  <li><b>API Key</b> → 填入"API Key"输入框</li>
+  </ul>
+</li>
+<li>（可选）在IMA中创建知识库并上传医学影像诊断相关文档/PDF</li>
+<li>（可选）获取<b>知识库ID</b>：在IMA知识库管理页面，每个知识库旁会显示其ID，复制后填入"知识库ID"输入框</li>
+</ol>
 <p style="color:#888890; font-size:12px;">说明：建议在IMA中创建专门的医学影像诊断知识库并上传相关文档/PDF，检索结果取决于知识库内容。检索策略：先用疾病名搜索，无结果时扩展为"检查类型+疾病名"，再用核心词兜底。</p>
 
 <h3 style="color:#5a91ff; margin-top:16px;">2. 火山方舟知识库</h3>
@@ -1621,19 +1742,50 @@ class _HelpDialog(QDialog):
 <tr><td style="color:#888890;">获取AK/SK</td><td><a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">https://console.volcengine.com/iam/keymanage</a> → 密钥管理</td></tr>
 <tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
 </table>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">🚀 一键导入CSV（推荐）：</b></p>
+<p style="color:#c0c0c8; font-size:12px;">在火山引擎控制台 → 密钥管理页面，可下载包含AK/SK的CSV配置文件。点击知识库配置对话框顶部的"<b>📂 导入CSV配置文件</b>"按钮，选择下载的CSV文件即可自动填入 Access Key 和 Secret Key，无需手动复制。</p>
 <p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式（可同时配置，优先使用模式1，失败自动降级到模式2）：</b></p>
 <ul style="color:#c0c0c8; font-size:12px;">
 <li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。采用 <b>HMAC-SHA256签名</b>（service: air，region: cn-beijing），支持混合检索+重排序+上下文扩散，检索精度更高。<b>Resource ID</b> 在火山方舟控制台 → 知识库详情页获取。</li>
 <li><b>模式2 Responses API</b>：需填写 API Key + 旗舰版知识库ID(Endpoint ID)。Bearer Token认证，无需AK/SK签名，通过大模型自动调用知识库。支持 knowledge_base_search（新）和 knowledge_search（旧）两种工具格式。</li>
 </ul>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">凭证获取详细步骤：</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li><b>获取 Access Key / Secret Key</b>（对应模式1）：
+  <ul>
+  <li>访问 <a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">火山引擎IAM密钥管理</a></li>
+  <li>点击"创建密钥" → 获取 <b>Access Key ID</b> 和 <b>Secret Access Key</b></li>
+  <li>方法A（推荐）：点击"导出CSV"下载配置文件，然后在知识库配置中点击"📂 导入CSV配置文件"按钮一键导入</li>
+  <li>方法B：手动复制 Access Key ID → 填入"Access Key"输入框；Secret Access Key → 填入"Secret Key"输入框</li>
+  <li>注意：Secret Access Key 仅在创建时显示一次，请务必保存</li>
+  </ul>
+</li>
+<li><b>获取 Resource ID</b>（对应模式1）：
+  <ul>
+  <li>访问 <a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">火山方舟控制台</a> → 知识库</li>
+  <li>创建知识库并上传医学影像诊断相关文档</li>
+  <li>进入知识库详情页，复制 <b>Resource ID</b>（格式如 kb-xxxxxxxx） → 填入"Resource ID"输入框</li>
+  </ul>
+</li>
+<li><b>获取 API Key</b>（对应模式2，可选）：
+  <ul>
+  <li>访问 <a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">火山方舟控制台</a> → API Key管理</li>
+  <li>创建API Key → 填入"API Key"输入框</li>
+  </ul>
+</li>
+<li><b>获取 旗舰版知识库ID</b>（对应模式2，可选）：
+  <ul>
+  <li>在火山方舟控制台创建旗舰版知识库 → 获取Endpoint ID → 填入"旗舰版ID"输入框</li>
+  </ul>
+</li>
+</ol>
 <p style="color:#888890; font-size:12px;"><b style="color:#f59e0b;">常见问题：</b></p>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li><b>HTTP 403 "check sign error"</b>：AK/SK凭证错误或无权限，请确认IAM密钥正确</li>
+<li><b>HTTP 403 "check sign error"</b>：AK/SK凭证错误或无权限，请确认IAM密钥正确（可使用CSV导入避免手动输入错误）</li>
 <li><b>HTTP 400 "collection not exist"</b>：签名通过但Resource ID/集合名称不存在，请到火山方舟控制台 → 知识库获取正确的Resource ID</li>
 <li><b>HTTP 400 "collection not specified"</b>：未填写Resource ID或集合名称，请补充配置</li>
 <li>若AK/SK权限申请困难，建议直接使用模式2（Responses API），仅需API Key即可</li>
 </ul>
-<p style="color:#888890; font-size:12px;">配置步骤：注册火山引擎 → 获取AK/SK（IAM密钥管理） → 开通方舟知识库服务 → 创建知识库并上传文档 → 获取Resource ID → 填入知识库配置</p>
 
 <h3 style="color:#5a91ff; margin-top:16px;">3. Google NotebookLM (Gemini File Search)</h3>
 <table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
@@ -1674,8 +1826,11 @@ class _HelpDialog(QDialog):
 
 <h3 style="color:#5a91ff; margin-top:16px;">3. 知识库文档查看</h3>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li>点击左侧知识库文档条目，右侧显示文档快照详情</li>
+<li>点击左侧知识库文档条目，右侧显示文档快照详情（PDF切片内容）</li>
 <li>详情包含：文档名称、来源、页码、原文链接、内容摘要</li>
+<li><b>放大/缩小</b>：点击详情面板右上角的"＋"/"－"按钮可调整字体大小，方便查看PDF切片内容</li>
+<li><b>收藏保存</b>：点击"☆ 收藏"按钮可保存当前文档，再次点击取消收藏。收藏的文档保存在 kb_favorites.json 中</li>
+<li>左侧结果列表过多时会自动显示滚动条，可滚动查看所有条目</li>
 <li>点击"查看原文"链接可跳转到原始文档</li>
 </ul>
 
@@ -1717,6 +1872,22 @@ class _KBConfigDialog(QDialog):
                         border-radius: 6px; margin-top: 8px; padding-top: 16px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
         """
+
+        # CSV一键导入按钮
+        import_row = QHBoxLayout()
+        import_hint = QLabel('一键导入火山方舟凭证：')
+        import_hint.setStyleSheet("color: #888890; font-size: 12px;")
+        import_row.addWidget(import_hint)
+        import_row.addStretch()
+        csv_btn = QPushButton('📂 导入CSV配置文件')
+        csv_btn.setStyleSheet("""
+            QPushButton { background: rgba(63,123,247,20); color: #5a91ff; border: 1px solid rgba(63,123,247,40);
+                          border-radius: 4px; padding: 6px 14px; font-size: 12px; }
+            QPushButton:hover { background: rgba(63,123,247,30); }
+        """)
+        csv_btn.clicked.connect(self._import_csv)
+        import_row.addWidget(csv_btn)
+        layout.addLayout(import_row)
 
         # 腾讯IMA知识库
         tencent_group = QGroupBox('腾讯IMA知识库')
@@ -1764,11 +1935,11 @@ class _KBConfigDialog(QDialog):
         self.volc_resource_id.setPlaceholderText('知识库Resource ID (优先使用)')
         volc_layout.addRow('Resource ID:', self.volc_resource_id)
         self.volc_collection = QLineEdit(volc_cfg.get('collection_name', ''))
-        self.volc_collection.setPlaceholderText('知识库集合名称 (与Resource ID二选一)')
-        volc_layout.addRow('集合名称:', self.volc_collection)
+        self.volc_collection.setPlaceholderText('知识库名称 (与Resource ID二选一)')
+        volc_layout.addRow('知识库名称:', self.volc_collection)
         self.volc_endpoint_id = QLineEdit(volc_cfg.get('endpoint_id', ''))
-        self.volc_endpoint_id.setPlaceholderText('旗舰版知识库ID (可选, 用于Responses API)')
-        volc_layout.addRow('旗舰版ID:', self.volc_endpoint_id)
+        self.volc_endpoint_id.setPlaceholderText('旗舰版知识库Endpoint ID (可选, 用于Responses API)')
+        volc_layout.addRow('旗舰版Endpoint ID:', self.volc_endpoint_id)
         volc_hint = QLabel('模式1 search_knowledge（推荐）：需Access Key + Secret Key + Resource ID/集合名称\n'
                            '模式2 Responses API：需API Key + 旗舰版知识库ID\n'
                            '两种模式可同时配置，优先使用search_knowledge')
@@ -1819,6 +1990,50 @@ class _KBConfigDialog(QDialog):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
+
+    def _import_csv(self):
+        """从火山引擎CSV配置文件一键导入AK/SK"""
+        from PyQt5.QtWidgets import QFileDialog
+        import csv as _csv
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, '选择火山引擎CSV配置文件', '', 'CSV文件 (*.csv);;所有文件 (*.*)'
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
+                reader = _csv.DictReader(f)
+                ak = sk = tenant_id = ''
+                for row in reader:
+                    # 匹配多种可能的列名
+                    ak = (row.get('Access Key ID') or row.get('access_key_id') or
+                          row.get('AK') or row.get('ak') or row.get('AccessKeyId') or '').strip()
+                    sk = (row.get('Secret Access Key') or row.get('secret_access_key') or
+                          row.get('SK') or row.get('sk') or row.get('SecretAccessKey') or '').strip()
+                    tenant_id = (row.get('所属主账号ID') or row.get('tenant_id') or
+                                 row.get('主账号ID') or row.get('AccountId') or '').strip()
+                    if ak and sk:
+                        break
+
+            if not ak or not sk:
+                QMessageBox.warning(self, '导入失败',
+                    '未能从CSV文件中找到 Access Key ID 和 Secret Access Key。\n'
+                    '请确认CSV文件包含以下列（不区分大小写）：\n'
+                    '  - Access Key ID / AK / AccessKeyId\n'
+                    '  - Secret Access Key / SK / SecretAccessKey')
+                return
+
+            self.volc_access_key.setText(ak)
+            self.volc_secret_key.setText(sk)
+            QMessageBox.information(self, '导入成功',
+                f'已成功导入火山方舟凭证：\n'
+                f'  Access Key: {ak[:16]}...\n'
+                f'  Secret Key: {sk[:8]}...{"（已填入配置）"}\n\n'
+                f'请点击"保存"按钮保存配置，然后填写 Resource ID 后即可使用。')
+        except Exception as e:
+            QMessageBox.warning(self, '导入失败', f'读取CSV文件失败：{str(e)}')
 
     def _test_kb(self, kb_type, btn):
         """测试知识库联通性"""
