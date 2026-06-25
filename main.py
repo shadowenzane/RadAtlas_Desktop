@@ -1686,7 +1686,7 @@ class _HelpDialog(QDialog):
 
 <h2 style="color:#3f7bf7; border-bottom:2px solid #3f7bf7; padding-bottom:8px;">RadAtlas 配置帮助文档</h2>
 
-<p style="color:#888890;">本文档详细介绍各家大模型(LLM)和知识库的配置流程及方法。</p>
+<p style="color:#888890;">本文档详细介绍各家大模型(LLM)和知识库的配置流程及方法。软件默认主题为"暖沙"，默认知识库为火山方舟。</p>
 
 <!-- ==================== LLM 配置 ==================== -->
 <h2 style="color:#f59e0b; margin-top:24px;">一、大模型(LLM)配置</h2>
@@ -1706,8 +1706,9 @@ class _HelpDialog(QDialog):
 <tr><td style="color:#888890;">API地址</td><td>https://ark.cn-beijing.volces.com/api/v3/responses</td></tr>
 <tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
 <tr><td style="color:#888890;">可用模型</td><td>doubao-seed-2-0-pro, doubao-seed-1-6, doubao-1-5-pro-32k 等</td></tr>
-<tr><td style="color:#888890;">备注</td><td>模型名称也可填入火山方舟的Endpoint ID（如 ep-xxxxxxxx）</td></tr>
+<tr><td style="color:#888890;">备注</td><td>模型名称也可填入火山方舟的Endpoint ID（如 ep-xxxxxxxx）。doubao-seed系列为推理模型，已启用 reasoning effort=low 加速响应</td></tr>
 <tr><td style="color:#888890;">配置步骤</td><td>注册火山引擎账号 → 开通方舟大模型服务 → 创建API Key → 填入AI配置</td></tr>
+<tr><td style="color:#888890;">超时设置</td><td>测试连接超时60秒，诊断调用超时180秒（推理模型响应较慢）</td></tr>
 </table>
 
 <h3 style="color:#5a91ff; margin-top:16px;">3. OpenAI</h3>
@@ -1737,84 +1738,110 @@ class _HelpDialog(QDialog):
 <p style="color:#888890; font-size:12px; margin-top:8px;">提示：模型名称输入框可编辑，支持手动输入自定义模型名称。可使用"测试连接"按钮验证配置是否正确。</p>
 
 <!-- ==================== 知识库配置 ==================== -->
-<h2 style="color:#f59e0b; margin-top:24px;">二、知识库配置</h2>
-<p style="color:#c0c0c8;">知识库用于检索医学影像诊断相关文档。支持三种知识库，每次查询选择一个。可单独使用知识库检索（不选大模型），也可与大模型配合使用。</p>
+<h2 style="color:#f59e0b; margin-top:24px;">二、知识库配置（重点）</h2>
+<p style="color:#c0c0c8;">知识库用于检索医学影像诊断相关文档。支持三种知识库，每次查询选择一个。<b style="color:#f59e0b;">默认选中火山方舟知识库</b>（若已配置）。可单独使用知识库检索（不选大模型），也可与大模型配合使用。</p>
 
-<h3 style="color:#5a91ff; margin-top:16px;">1. 腾讯IMA知识库</h3>
-<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
-<tr><td style="color:#888890;">API地址</td><td>https://ima.qq.com/openapi</td></tr>
-<tr><td style="color:#888890;">认证方式</td><td>请求头认证：ima-openapi-clientid + ima-openapi-apikey</td></tr>
-<tr><td style="color:#888890;">获取凭证</td><td><a href="https://ima.qq.com/agent-interface" style="color:#3f7bf7;">https://ima.qq.com/agent-interface</a></td></tr>
-<tr><td style="color:#888890;">需要填写</td><td>Client ID（必填）+ API Key（必填）+ 知识库ID（可选）</td></tr>
-<tr><td style="color:#888890;">检索方式</td><td>优先使用<b>知识库模块</b>（wiki/v1/search_knowledge），无结果时降级到<b>笔记模块</b>（note/v1/search_note_book）</td></tr>
-<tr><td style="color:#888890;">知识库ID</td><td>留空搜索全部知识库，填写则限定指定知识库（推荐填写以提高命中率）</td></tr>
-</table>
-<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">凭证获取详细步骤：</b></p>
-<ol style="color:#c0c0c8; font-size:12px;">
-<li>访问 <a href="https://ima.qq.com" style="color:#3f7bf7;">https://ima.qq.com</a> → 登录腾讯IMA</li>
-<li>点击右上角头像 → 进入 <a href="https://ima.qq.com/agent-interface" style="color:#3f7bf7;">开放平台/Agent接口</a> 页面</li>
-<li>创建API应用凭证，获取以下两个值（对应配置对话框中的字段）：
-  <ul>
-  <li><b>Client ID</b> → 填入"Client ID"输入框</li>
-  <li><b>API Key</b> → 填入"API Key"输入框</li>
-  </ul>
-</li>
-<li>（可选）在IMA中创建知识库并上传医学影像诊断相关文档/PDF</li>
-<li>（可选）获取<b>知识库ID</b>：在IMA知识库管理页面，每个知识库旁会显示其ID，复制后填入"知识库ID"输入框</li>
-</ol>
-<p style="color:#888890; font-size:12px;">说明：建议在IMA中创建专门的医学影像诊断知识库并上传相关文档/PDF，检索结果取决于知识库内容。检索策略：先用疾病名搜索，无结果时扩展为"检查类型+疾病名"，再用核心词兜底。</p>
+<h3 style="color:#5a91ff; margin-top:16px;">1. 火山方舟知识库（默认推荐）</h3>
+<p style="color:#c0c0c8; font-size:12px;">火山方舟知识库支持两种检索模式，可同时配置。系统优先使用模式1（search_knowledge），失败自动降级到模式2（Responses API）。</p>
 
-<h3 style="color:#5a91ff; margin-top:16px;">2. 火山方舟知识库</h3>
-<table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
-<tr><td style="color:#888890;">API地址</td><td>https://api-knowledgebase.mlp.cn-beijing.volces.com/api/knowledge/collection/search_knowledge</td></tr>
-<tr><td style="color:#888890;">认证方式</td><td>模式1: HMAC-SHA256签名(AK/SK, service=air, region=cn-beijing) &nbsp;|&nbsp; 模式2: Bearer Token (API Key)</td></tr>
-<tr><td style="color:#888890;">获取AK/SK</td><td><a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">https://console.volcengine.com/iam/keymanage</a> → 密钥管理</td></tr>
-<tr><td style="color:#888890;">获取API Key</td><td><a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">https://console.volcengine.com/ark</a> → APIKey管理</td></tr>
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">📋 配置字段对照表：</b></p>
+<table style="color:#c0c0c8; font-size:11px;" cellpadding="4" border="1" bordercolor="#2a2a30">
+<tr style="background:#1a1a1e;"><td style="color:#f59e0b;">配置对话框字段</td><td style="color:#f59e0b;">火山引擎控制台对应位置</td><td style="color:#f59e0b;">所属模式</td></tr>
+<tr><td>Access Key</td><td>IAM密钥管理 → Access Key ID</td><td>模式1</td></tr>
+<tr><td>Secret Key</td><td>IAM密钥管理 → Secret Access Key</td><td>模式1</td></tr>
+<tr><td>Resource ID</td><td>火山方舟控制台 → 知识库详情页 → Resource ID</td><td>模式1</td></tr>
+<tr><td>知识库名称</td><td>火山方舟控制台 → 知识库 → 集合名称（可选）</td><td>模式1</td></tr>
+<tr><td>API Key</td><td>火山方舟控制台 → APIKey管理 → 创建API Key</td><td>模式2</td></tr>
+<tr><td>旗舰版Endpoint ID</td><td>火山方舟控制台 → 旗舰版知识库 → Endpoint ID</td><td>模式2</td></tr>
 </table>
-<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">🚀 一键导入CSV（推荐）：</b></p>
-<p style="color:#c0c0c8; font-size:12px;">在火山引擎控制台 → 密钥管理页面，可下载包含AK/SK的CSV配置文件。点击知识库配置对话框顶部的"<b>📂 导入CSV配置文件</b>"按钮，选择下载的CSV文件即可自动填入 Access Key 和 Secret Key，无需手动复制。</p>
-<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">两种检索模式（可同时配置，优先使用模式1，失败自动降级到模式2）：</b></p>
-<ul style="color:#c0c0c8; font-size:12px;">
-<li><b>模式1 search_knowledge（推荐）</b>：需填写 Access Key + Secret Key + Resource ID或集合名称。采用 <b>HMAC-SHA256签名</b>（service: air，region: cn-beijing），支持混合检索+重排序+上下文扩散，检索精度更高。<b>Resource ID</b> 在火山方舟控制台 → 知识库详情页获取。</li>
-<li><b>模式2 Responses API</b>：需填写 API Key + 旗舰版知识库ID(Endpoint ID)。Bearer Token认证，无需AK/SK签名，通过大模型自动调用知识库。支持 knowledge_base_search（新）和 knowledge_search（旧）两种工具格式。</li>
-</ul>
-<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">凭证获取详细步骤：</b></p>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">🔑 步骤一：获取 Access Key / Secret Key（模式1必填）</b></p>
 <ol style="color:#c0c0c8; font-size:12px;">
-<li><b>获取 Access Key / Secret Key</b>（对应模式1）：
+<li>访问 <a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">火山引擎IAM密钥管理</a>，登录火山引擎账号</li>
+<li>点击"<b>创建密钥</b>"按钮，弹出密钥创建对话框</li>
+<li>获取 <b>Access Key ID</b>（如 AKLTxxxxx）和 <b>Secret Access Key</b>（如 T1dKxxxxx）</li>
+<li><b style="color:#f59e0b;">方法A（推荐）：CSV一键导入</b>
   <ul>
-  <li>访问 <a href="https://console.volcengine.com/iam/keymanage" style="color:#3f7bf7;">火山引擎IAM密钥管理</a></li>
-  <li>点击"创建密钥" → 获取 <b>Access Key ID</b> 和 <b>Secret Access Key</b></li>
-  <li>方法A（推荐）：点击"导出CSV"下载配置文件，然后在知识库配置中点击"📂 导入CSV配置文件"按钮一键导入</li>
-  <li>方法B：手动复制 Access Key ID → 填入"Access Key"输入框；Secret Access Key → 填入"Secret Key"输入框</li>
-  <li>注意：Secret Access Key 仅在创建时显示一次，请务必保存</li>
+  <li>在密钥列表页点击"<b>导出CSV</b>"，下载CSV文件到本地</li>
+  <li>打开RadAtlas知识库配置对话框</li>
+  <li>点击顶部"<b>📂 导入CSV配置文件</b>"按钮，选择刚下载的CSV文件</li>
+  <li>Access Key 和 Secret Key 自动填入，无需手动复制</li>
   </ul>
 </li>
-<li><b>获取 Resource ID</b>（对应模式1）：
+<li><b style="color:#f59e0b;">方法B：手动复制</b>
   <ul>
-  <li>访问 <a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">火山方舟控制台</a> → 知识库</li>
-  <li>创建知识库并上传医学影像诊断相关文档</li>
-  <li>进入知识库详情页，复制 <b>Resource ID</b>（格式如 kb-xxxxxxxx） → 填入"Resource ID"输入框</li>
-  </ul>
-</li>
-<li><b>获取 API Key</b>（对应模式2，可选）：
-  <ul>
-  <li>访问 <a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">火山方舟控制台</a> → API Key管理</li>
-  <li>创建API Key → 填入"API Key"输入框</li>
-  </ul>
-</li>
-<li><b>获取 旗舰版知识库ID</b>（对应模式2，可选）：
-  <ul>
-  <li>在火山方舟控制台创建旗舰版知识库 → 获取Endpoint ID → 填入"旗舰版ID"输入框</li>
+  <li>复制 Access Key ID → 填入配置对话框的"<b>Access Key</b>"输入框</li>
+  <li>复制 Secret Access Key → 填入配置对话框的"<b>Secret Key</b>"输入框</li>
+  <li>⚠️ Secret Access Key 仅在创建时显示一次，请务必保存</li>
   </ul>
 </li>
 </ol>
-<p style="color:#888890; font-size:12px;"><b style="color:#f59e0b;">常见问题：</b></p>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">📚 步骤二：获取 Resource ID（模式1必填）</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>访问 <a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">火山方舟控制台</a> → 左侧菜单"<b>知识库</b>"</li>
+<li>点击"<b>创建知识库</b>"，上传医学影像诊断相关文档（PDF/EPUB/TXT等）</li>
+<li>等待文档处理完成（分片、向量化）</li>
+<li>进入知识库详情页，找到 <b>Resource ID</b>（格式如 <code>vcf-xxxxxxxx</code> 或 <code>kb-xxxxxxxx</code>）</li>
+<li>复制 Resource ID → 填入配置对话框的"<b>Resource ID</b>"输入框</li>
+</ol>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">🔑 步骤三：获取 API Key（模式2可选）</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>访问 <a href="https://console.volcengine.com/ark" style="color:#3f7bf7;">火山方舟控制台</a> → 左侧菜单"<b>APIKey管理</b>"</li>
+<li>点击"<b>创建API Key</b>" → 复制生成的API Key（如 ark-xxxxxxxx）</li>
+<li>填入配置对话框的"<b>API Key</b>"输入框</li>
+</ol>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">📚 步骤四：获取旗舰版Endpoint ID（模式2可选）</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>在火山方舟控制台创建"<b>旗舰版知识库</b>"（需开通旗舰版服务）</li>
+<li>进入旗舰版知识库详情页，获取 <b>Endpoint ID</b>（如 ep-xxxxxxxx）</li>
+<li>填入配置对话框的"<b>旗舰版Endpoint ID</b>"输入框</li>
+</ol>
+
+<p style="color:#888890; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">⚠️ 常见问题排查：</b></p>
 <ul style="color:#c0c0c8; font-size:12px;">
-<li><b>HTTP 403 "check sign error"</b>：AK/SK凭证错误或无权限，请确认IAM密钥正确（可使用CSV导入避免手动输入错误）</li>
-<li><b>HTTP 400 "collection not exist"</b>：签名通过但Resource ID/集合名称不存在，请到火山方舟控制台 → 知识库获取正确的Resource ID</li>
-<li><b>HTTP 400 "collection not specified"</b>：未填写Resource ID或集合名称，请补充配置</li>
-<li>若AK/SK权限申请困难，建议直接使用模式2（Responses API），仅需API Key即可</li>
+<li><b>HTTP 403 "check sign error"</b>：AK/SK凭证错误 → 使用CSV导入避免手动输入错误</li>
+<li><b>HTTP 400 "collection not exist"</b>：Resource ID不存在 → 到火山方舟控制台确认正确的Resource ID</li>
+<li><b>HTTP 429</b>：QPS限流 → 稍后重试，系统已自动添加重试机制</li>
+<li>若AK/SK权限申请困难 → 建议仅使用模式2（API Key + 旗舰版Endpoint ID）</li>
+<li>模式1返回的切片包含<b>原书图片</b>（预签名URL，4小时有效），可在切片查看器中直接查看</li>
 </ul>
+
+<h3 style="color:#5a91ff; margin-top:16px;">2. 腾讯IMA知识库</h3>
+<p style="color:#c0c0c8; font-size:12px;">腾讯IMA知识库优先使用<b>知识库模块</b>（wiki/v1/search_knowledge），无结果时降级到<b>笔记模块</b>（note/v1/search_note_book）。</p>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:8px;"><b style="color:#f59e0b;">📋 配置字段对照表：</b></p>
+<table style="color:#c0c0c8; font-size:11px;" cellpadding="4" border="1" bordercolor="#2a2a30">
+<tr style="background:#1a1a1e;"><td style="color:#f59e0b;">配置对话框字段</td><td style="color:#f59e0b;">IMA网站对应位置</td><td style="color:#f59e0b;">必填</td></tr>
+<tr><td>Client ID</td><td>IMA开放平台 → API应用凭证 → Client ID</td><td>是</td></tr>
+<tr><td>API Key</td><td>IMA开放平台 → API应用凭证 → API Key</td><td>是</td></tr>
+<tr><td>知识库ID</td><td>IMA知识库管理页面 → 知识库ID</td><td>否（推荐填写）</td></tr>
+</table>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">🔑 步骤一：获取 Client ID 和 API Key</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>访问 <a href="https://ima.qq.com" style="color:#3f7bf7;">https://ima.qq.com</a> → 登录腾讯IMA账号</li>
+<li>点击右上角头像 → 进入"<b>开放平台/Agent接口</b>"页面</li>
+<li>或直接访问 <a href="https://ima.qq.com/agent-interface" style="color:#3f7bf7;">https://ima.qq.com/agent-interface</a></li>
+<li>创建API应用凭证，获取：
+  <ul>
+  <li><b>Client ID</b> → 填入配置对话框的"<b>Client ID</b>"输入框</li>
+  <li><b>API Key</b> → 填入配置对话框的"<b>API Key</b>"输入框</li>
+  </ul>
+</li>
+</ol>
+
+<p style="color:#c0c0c8; font-size:12px; margin-top:12px;"><b style="color:#f59e0b;">📚 步骤二：获取知识库ID（可选但推荐）</b></p>
+<ol style="color:#c0c0c8; font-size:12px;">
+<li>在IMA中创建知识库 → 上传医学影像诊断相关文档/PDF</li>
+<li>进入知识库管理页面，找到目标知识库的 <b>知识库ID</b></li>
+<li>复制知识库ID → 填入配置对话框的"<b>知识库ID</b>"输入框</li>
+<li>⚠️ 若不填知识库ID，wiki模块不可用，系统将仅使用笔记模块搜索（可能无结果）</li>
+</ol>
+
+<p style="color:#888890; font-size:12px; margin-top:8px;">说明：检索策略为疾病名 → "检查类型+疾病名" → 核心词三级查询。建议在IMA中创建专门的医学影像诊断知识库并上传相关文档。</p>
 
 <h3 style="color:#5a91ff; margin-top:16px;">3. Google NotebookLM (Gemini File Search)</h3>
 <table style="color:#c0c0c8; font-size:12px;" cellpadding="4">
@@ -1834,10 +1861,17 @@ class _HelpDialog(QDialog):
 <!-- ==================== 使用说明 ==================== -->
 <h2 style="color:#f59e0b; margin-top:24px;">三、使用说明</h2>
 
-<h3 style="color:#5a91ff; margin-top:16px;">1. 大模型 + 知识库联合检索（推荐）</h3>
+<h3 style="color:#5a91ff; margin-top:16px;">1. 检查类型</h3>
+<p style="color:#c0c0c8; font-size:12px;">支持以下检查类型：CT、X-Ray、MRI、PET-CT、超声、DSA、<b style="color:#f59e0b;">ECG(心电图)</b>。</p>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li><b>影像类</b>（CT/X-Ray/MRI等）：使用影像诊断专家角色，分析影像学表现</li>
+<li><b>ECG(心电图)</b>：使用心电诊断专家角色，分析心率、心律、P波、PR间期、QRS波群、ST段、T波、QT间期等心电图特征</li>
+</ul>
+
+<h3 style="color:#5a91ff; margin-top:16px;">2. 大模型 + 知识库联合检索（推荐）</h3>
 <ol style="color:#c0c0c8; font-size:12px;">
 <li>选择1-2个大模型（默认选中前2个已配置的模型）</li>
-<li>选择1个知识库</li>
+<li>选择1个知识库（默认选中火山方舟，若已配置）</li>
 <li>输入检查类型和关键征象，点击"开始查询"</li>
 <li>系统先并行调用大模型获取诊断结果</li>
 <li>从诊断结果中提取匹配度最高的1-3个疾病名</li>
@@ -1845,7 +1879,7 @@ class _HelpDialog(QDialog):
 <li>知识库文档按疾病分组显示在诊断条目下方</li>
 </ol>
 
-<h3 style="color:#5a91ff; margin-top:16px;">2. 单独知识库检索</h3>
+<h3 style="color:#5a91ff; margin-top:16px;">3. 单独知识库检索</h3>
 <ol style="color:#c0c0c8; font-size:12px;">
 <li>不选择任何大模型</li>
 <li>选择1个已配置的知识库</li>
@@ -1853,19 +1887,26 @@ class _HelpDialog(QDialog):
 <li>系统直接用关键字检索知识库，返回匹配文档</li>
 </ol>
 
-<h3 style="color:#5a91ff; margin-top:16px;">3. 知识库文档查看</h3>
+<h3 style="color:#5a91ff; margin-top:16px;">4. 知识库文档查看</h3>
 <ul style="color:#c0c0c8; font-size:12px;">
 <li>点击左侧知识库文档条目，右侧显示文档快照详情（含元信息和切片预览）</li>
 <li>详情包含：文档名称、来源、切片ID、原文链接</li>
-<li><b>切片/快照查看</b>：点击"查看完整切片内容"链接，打开独立查看器窗口，显示完整切片内容</li>
-<li><b>原书图片</b>：火山方舟知识库返回的切片中包含原书图片（预签名URL，4小时有效），在查看器中以&lt;img&gt;标签内联显示，可直接查看原书中的影像图片</li>
-<li><b>放大/缩小</b>：查看器和详情面板均有缩放按钮（＋/－），查看器还提供1:1重置按钮。使用 QTextBrowser 内置缩放，同时缩放文字和图片</li>
-<li><b>收藏保存</b>：点击"☆ 收藏"按钮可保存当前文档，再次点击取消收藏。收藏的文档保存在 kb_favorites.json 中</li>
+<li><b>切片/快照查看</b>：点击"查看完整切片内容"链接，打开独立查看器窗口</li>
+<li><b>原书图片</b>：火山方舟知识库返回的切片包含原书图片，在查看器中自动下载并显示（后台异步加载，带加载进度提示）</li>
+<li><b>放大/缩小</b>：查看器有缩放按钮（＋/－/1:1重置），使用 QTextBrowser 内置缩放，<b>同时缩放文字和图片</b></li>
+<li><b>收藏保存</b>：点击"☆ 收藏"按钮可保存当前文档，再次点击取消收藏</li>
 <li>左侧结果列表过多时会自动显示滚动条，可滚动查看所有条目</li>
 <li>点击"查看原文"链接可跳转到原始文档</li>
 </ul>
 
-<h3 style="color:#5a91ff; margin-top:16px;">4. 联通测试</h3>
+<h3 style="color:#5a91ff; margin-top:16px;">5. 主题切换</h3>
+<ul style="color:#c0c0c8; font-size:12px;">
+<li>软件默认主题为"<b>暖沙</b>"</li>
+<li>可通过菜单栏切换主题（深蓝暗夜、暖沙等）</li>
+<li>切片查看器窗口自动跟随主程序主题配色</li>
+</ul>
+
+<h3 style="color:#5a91ff; margin-top:16px;">6. 联通测试</h3>
 <ul style="color:#c0c0c8; font-size:12px;">
 <li>在AI配置和知识库配置对话框中，每个配置项都有"测试连接"按钮</li>
 <li>点击后会向对应服务发送测试请求，验证配置是否正确</li>
