@@ -1014,22 +1014,13 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
     path = '/api/knowledge/collection/search_knowledge'
     url = f'https://{host}{path}'
 
-    # 构建检索请求 - 优化参数提高命中率
+    # 构建检索请求
+    # 注意：免费版/标准版知识库不支持 query_param.doc_filter，而API要求
+    # query_param必须包含doc_filter，因此不能使用query_param字段
+    # post_processing中的高级功能可能触发QPS限制，使用最简payload保证兼容性
     payload = {
         'query': keywords,
         'limit': 5,
-        'query_param': {
-            'dense_weight': 0.6,  # 偏向语义检索，适合医学术语匹配
-        },
-        'post_processing': {
-            'rerank_switch': True,       # 开启重排序
-            'retrieve_count': 25,        # 进入重排的候选数量
-            'chunk_diffusion_count': 1,  # 返回上下文相邻切片
-            'chunk_group': True,         # 文本聚合排序，保持语序
-            'rerank_model': 'm3-v2-rerank',
-            'rerank_only_chunk': False,  # 根据title+内容一起计算排序分
-            'get_attachment_link': True,
-        },
     }
 
     if resource_id:
@@ -1077,37 +1068,50 @@ def _query_volcengine_search_kb(kb_config, exam_type, keywords):
 
     last_error = ''
     data = None
+    import time
     for sign_name, headers in sign_attempts:
-        try:
-            resp = requests.post(url, headers=headers, data=body.encode('utf-8'), timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                break
-            # 解析错误
+        # 429 QPS限流时重试，最多3次
+        for retry in range(3):
             try:
-                err_data = resp.json()
-                err_msg = err_data.get('message', '') or err_data.get('Message', '')
-                err_code = err_data.get('code', 0) or err_data.get('Code', 0)
-            except Exception:
-                err_msg = resp.text[:200]
-                err_code = 0
+                resp = requests.post(url, headers=headers, data=body.encode('utf-8'), timeout=30)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    break
+                if resp.status_code == 429:
+                    # QPS限流，等待后重试
+                    wait = (retry + 1) * 1.5
+                    last_error = f'{sign_name}: HTTP 429 QPS限流'
+                    if retry < 2:
+                        time.sleep(wait)
+                        continue
+                    break  # 重试次数用完，跳出重试循环
+                # 解析错误
+                try:
+                    err_data = resp.json()
+                    err_msg = err_data.get('message', '') or err_data.get('Message', '')
+                    err_code = err_data.get('code', 0) or err_data.get('Code', 0)
+                except Exception:
+                    err_msg = resp.text[:200]
+                    err_code = 0
 
-            # 403 = 签名错误，尝试下一种签名方式
-            # 其他错误（400/500等）= 签名通过但请求有问题，直接抛出
-            if resp.status_code == 403:
-                last_error = f'{sign_name}: HTTP {resp.status_code} - {err_msg}'
-                continue
-            else:
-                # 签名通过，但是业务错误（如缺少collection_name/resource_id）
-                if 'collection not specified' in err_msg:
-                    raise ValueError(
-                        f'火山方舟知识库缺少知识库标识。请在知识库配置中填写 Resource ID 或 集合名称。\n'
-                        f'（签名已通过验证，凭证有效）'
-                    )
-                raise ValueError(f'火山方舟知识库API错误 [HTTP {resp.status_code}, code={err_code}]: {err_msg}')
-        except requests.exceptions.RequestException as e:
-            last_error = f'{sign_name}: {str(e)}'
-            continue
+                # 403 = 签名错误，尝试下一种签名方式
+                # 其他错误（400/500等）= 签名通过但请求有问题，直接抛出
+                if resp.status_code == 403:
+                    last_error = f'{sign_name}: HTTP {resp.status_code} - {err_msg}'
+                    break  # 跳出重试循环，尝试下一种签名
+                else:
+                    # 签名通过，但是业务错误（如缺少collection_name/resource_id）
+                    if 'collection not specified' in err_msg:
+                        raise ValueError(
+                            f'火山方舟知识库缺少知识库标识。请在知识库配置中填写 Resource ID 或 集合名称。\n'
+                            f'（签名已通过验证，凭证有效）'
+                        )
+                    raise ValueError(f'火山方舟知识库API错误 [HTTP {resp.status_code}, code={err_code}]: {err_msg}')
+            except requests.exceptions.RequestException as e:
+                last_error = f'{sign_name}: {str(e)}'
+                break
+        if data is not None:
+            break
 
     if data is None:
         raise ValueError(f'火山方舟知识库所有签名方式均失败。最后错误: {last_error}')
