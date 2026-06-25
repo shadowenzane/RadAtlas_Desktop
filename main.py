@@ -1877,6 +1877,39 @@ class _HelpDialog(QDialog):
 </div>"""
 
 
+class _ImageLoadWorker(QThread):
+    """后台下载原书图片的worker线程"""
+    image_loaded = pyqtSignal(int, str)  # index, local_file_path
+    all_done = pyqtSignal()
+
+    def __init__(self, image_urls):
+        super().__init__()
+        self._urls = image_urls
+
+    def run(self):
+        import requests as _requests
+        import tempfile as _tf
+        import os as _os
+        for i, url in enumerate(self._urls):
+            try:
+                resp = _requests.get(url, timeout=15)
+                if resp.status_code == 200 and resp.content:
+                    # 保存到临时文件
+                    suffix = '.png'
+                    ct = resp.headers.get('Content-Type', '')
+                    if 'jpeg' in ct or 'jpg' in ct:
+                        suffix = '.jpg'
+                    elif 'webp' in ct:
+                        suffix = '.webp'
+                    fd, tmp_path = _tf.mkstemp(suffix=suffix, prefix='kb_img_')
+                    with _os.fdopen(fd, 'wb') as f:
+                        f.write(resp.content)
+                    self.image_loaded.emit(i, tmp_path)
+            except Exception:
+                pass
+        self.all_done.emit()
+
+
 class _KBSnippetViewer(QDialog):
     """知识库文档切片/快照查看器 — 支持缩放查看图文内容"""
     def __init__(self, doc, parent=None):
@@ -1947,8 +1980,12 @@ class _KBSnippetViewer(QDialog):
             QTextBrowser { background: #1a1a1e; border: none;
                           color: #d0d0d4; padding: 20px; font-size: 14px; line-height: 1.8; }
         """)
+        # 先显示文本内容，图片异步加载
         self.browser.setHtml(self._build_content_html())
         layout.addWidget(self.browser)
+
+        # 异步下载并加载原书图片
+        self._load_images_async()
 
         # 底部按钮栏
         btn_row = QHBoxLayout()
@@ -2020,23 +2057,68 @@ class _KBSnippetViewer(QDialog):
 
         # 原书图片
         if images:
+            local_paths = getattr(self, '_image_local_paths', {})
+            loaded_count = len(local_paths)
             html += '<hr style="border:none; border-top:1px solid #2a2a30; margin:20px 0;">'
-            html += f'<h3 style="color:#f0c060; margin:16px 0 12px 0;">原书图片（{len(images)}张）</h3>'
+            if loaded_count < len(images):
+                html += f'<h3 style="color:#f0c060; margin:16px 0 12px 0;">原书图片（{len(images)}张，已加载{loaded_count}张...）</h3>'
+            else:
+                html += f'<h3 style="color:#f0c060; margin:16px 0 12px 0;">原书图片（{len(images)}张）</h3>'
             for i, img in enumerate(images):
-                img_url = img.get('url', '')
                 caption = img.get('caption', '')
-                if img_url:
+                # 优先使用已下载的本地文件路径
+                local_path = local_paths.get(i)
+                if local_path:
+                    img_src = QUrl.fromLocalFile(local_path).toString()
                     html += f'<div style="margin-bottom:20px; text-align:center;">'
-                    html += f'<img src="{img_url}" style="max-width:100%; border:2px solid #2a2a30; '
+                    html += f'<img src="{img_src}" style="max-width:100%; border:2px solid #2a2a30; '
                     html += 'border-radius:8px; margin:8px 0;" />'
                     if caption:
                         html += f'<p style="color:#888890; font-size:12px; margin-top:4px;">{caption}</p>'
                     else:
                         html += f'<p style="color:#666670; font-size:11px; margin-top:4px;">图 {i+1}</p>'
                     html += '</div>'
+                else:
+                    html += f'<div style="margin-bottom:20px; text-align:center; padding:40px; '
+                    html += 'background:#1a1a1e; border:2px dashed #2a2a30; border-radius:8px;">'
+                    html += f'<p style="color:#666670; font-size:12px;">图 {i+1} 加载中...</p>'
+                    html += '</div>'
 
         html += '</div>'
         return html
+
+    def _load_images_async(self):
+        """异步下载原书图片到临时文件，再通过 file:// URL 加载"""
+        images = self._doc.get('images', []) or []
+        if not images:
+            return
+        urls = [img.get('url', '') for img in images if img.get('url')]
+        if not urls:
+            return
+        # 初始化 local_path 字段
+        self._image_local_paths = {}
+        # 启动后台下载线程
+        self._image_worker = _ImageLoadWorker(urls)
+        self._image_worker.image_loaded.connect(self._on_image_loaded)
+        self._image_worker.all_done.connect(self._on_images_done)
+        self._image_worker.start()
+
+    def _on_image_loaded(self, idx, local_path):
+        """单张图片下载完成 → 记录本地路径并刷新HTML"""
+        self._image_local_paths[idx] = local_path
+        self._refresh_content()
+
+    def _on_images_done(self):
+        """所有图片下载完成"""
+        self._refresh_content()
+
+    def _refresh_content(self):
+        """刷新内容（保持缩放级别）"""
+        self.browser.setHtml(self._build_content_html())
+        if self._zoom_level > 0:
+            self.browser.zoomIn(self._zoom_level)
+        elif self._zoom_level < 0:
+            self.browser.zoomOut(-self._zoom_level)
 
     def _zoom(self, delta):
         """缩放内容（QTextBrowser.zoomIn/zoomOut 同时缩放文字和图片）"""
@@ -2053,6 +2135,17 @@ class _KBSnippetViewer(QDialog):
         elif self._zoom_level < 0:
             self.browser.zoomIn(-self._zoom_level)
         self._zoom_level = 0
+
+    def closeEvent(self, event):
+        """关闭时清理临时图片文件"""
+        import os as _os
+        for path in getattr(self, '_image_local_paths', {}).values():
+            try:
+                if _os.path.exists(path):
+                    _os.remove(path)
+            except Exception:
+                pass
+        super().closeEvent(event)
 
 
 class _KBConfigDialog(QDialog):
