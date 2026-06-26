@@ -2036,11 +2036,15 @@ class _KBSnippetViewer(QDialog):
         self.browser.setOpenExternalLinks(True)
         self.browser.setStyleSheet(f"""
             QTextBrowser {{ background: {t['bg2']}; border: none;
-                          color: {t['fg']}; padding: 20px; font-size: 14px; line-height: 1.8; }}
+                          color: {t['fg']}; padding: 20px; line-height: 1.8; }}
         """)
         # 先显示文本内容，图片异步加载
         self.browser.setHtml(self._build_content_html())
         layout.addWidget(self.browser)
+        # 显示当前缩放级别
+        self._zoom_label = QLabel(f'缩放: 100%')
+        self._zoom_label.setStyleSheet(f"color: {t['fg2']}; font-size: 11px; padding: 2px 12px;")
+        layout.addWidget(self._zoom_label)
 
         # 异步下载并加载原书图片
         self._load_images_async()
@@ -2071,7 +2075,7 @@ class _KBSnippetViewer(QDialog):
         layout.addLayout(btn_row)
 
     def _build_content_html(self):
-        """构建切片内容HTML（含原书图片），使用主题配色"""
+        """构建切片内容HTML（含原书图片），使用主题配色，根据缩放级别调整字号和图片尺寸"""
         t = self._t
         doc_name = self._doc.get('doc_name', '')
         page = self._doc.get('page', '')
@@ -2079,6 +2083,14 @@ class _KBSnippetViewer(QDialog):
         source = self._doc.get('source', '')
         url = self._doc.get('url', '')
         images = self._doc.get('images', []) or []
+
+        # 根据缩放级别计算字号和图片尺寸
+        zl = self._zoom_level
+        text_size = max(8, 14 + zl * 2)         # 基础14px，每级±2px
+        small_size = max(7, 12 + zl * 2)        # 小字
+        img_scale = max(0.2, 1.0 + zl * 0.15)   # 图片缩放因子
+        img_max_w = int(90 * img_scale)
+        img_max_h = int(500 * img_scale)
 
         html = '<div style="font-family: Microsoft YaHei;">'
 
@@ -2092,13 +2104,13 @@ class _KBSnippetViewer(QDialog):
             meta_parts.append(f'<span style="color:{t["accent_hover"]};">含 {len(images)} 张原书图片</span>')
         if meta_parts:
             html += f'<div style="margin-bottom:16px; padding:8px 12px; background:{t["bg3"]}; '
-            html += f'border-radius:4px; border-left:3px solid {t["accent"]}; font-size:12px;">'
+            html += f'border-radius:4px; border-left:3px solid {t["accent"]}; font-size:{small_size}px;">'
             html += ' &nbsp;|&nbsp; '.join(meta_parts)
             html += '</div>'
 
         # 切片文本内容（完整显示）
         if content:
-            html += f'<div style="color:{t["fg"]}; line-height:2.0; white-space:pre-wrap; font-size:14px;">'
+            html += f'<div style="color:{t["fg"]}; line-height:2.0; white-space:pre-wrap; font-size:{text_size}px;">'
             import re as _re
             content_escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             content_escaped = _re.sub(
@@ -2109,35 +2121,36 @@ class _KBSnippetViewer(QDialog):
             html += content_escaped
             html += '</div>'
         else:
-            html += f'<p style="color:{t["fg3"]};">（无文本内容）</p>'
+            html += f'<p style="color:{t["fg3"]}; font-size:{text_size}px;">（无文本内容）</p>'
 
         # 原书图片
         if images:
             local_paths = getattr(self, '_image_local_paths', {})
             loaded_count = len(local_paths)
             html += f'<hr style="border:none; border-top:1px solid {t["border"]}; margin:20px 0;">'
+            h3_size = max(10, 16 + zl * 2)
             if loaded_count < len(images):
-                html += f'<h3 style="color:{t["accent_hover"]}; margin:16px 0 12px 0;">原书图片（{len(images)}张，已加载{loaded_count}张...）</h3>'
+                html += f'<h3 style="color:{t["accent_hover"]}; margin:16px 0 12px 0; font-size:{h3_size}px;">原书图片（{len(images)}张，已加载{loaded_count}张...）</h3>'
             else:
-                html += f'<h3 style="color:{t["accent_hover"]}; margin:16px 0 12px 0;">原书图片（{len(images)}张）</h3>'
+                html += f'<h3 style="color:{t["accent_hover"]}; margin:16px 0 12px 0; font-size:{h3_size}px;">原书图片（{len(images)}张）</h3>'
             for i, img in enumerate(images):
                 caption = img.get('caption', '')
                 local_path = local_paths.get(i)
                 if local_path:
                     img_src = QUrl.fromLocalFile(local_path).toString()
                     html += f'<div style="margin-bottom:24px; text-align:center; page-break-inside:avoid;">'
-                    html += f'<img src="{img_src}" style="max-width:90%; max-height:500px; '
+                    html += f'<img src="{img_src}" style="max-width:{img_max_w}%; max-height:{img_max_h}px; '
                     html += f'border:1px solid {t["border"]}; border-radius:6px; margin:8px 0; '
                     html += 'box-shadow:0 2px 8px rgba(0,0,0,0.3);" />'
                     if caption:
-                        html += f'<p style="color:{t["fg2"]}; font-size:12px; margin-top:6px;">{caption}</p>'
+                        html += f'<p style="color:{t["fg2"]}; font-size:{small_size}px; margin-top:6px;">{caption}</p>'
                     else:
-                        html += f'<p style="color:{t["fg3"]}; font-size:11px; margin-top:6px;">图 {i+1}</p>'
+                        html += f'<p style="color:{t["fg3"]}; font-size:{small_size-1}px; margin-top:6px;">图 {i+1}</p>'
                     html += '</div>'
                 else:
                     html += f'<div style="margin-bottom:20px; text-align:center; padding:40px; '
                     html += f'background:{t["bg3"]}; border:2px dashed {t["border"]}; border-radius:8px;">'
-                    html += f'<p style="color:{t["fg3"]}; font-size:12px;">图 {i+1} 加载中...</p>'
+                    html += f'<p style="color:{t["fg3"]}; font-size:{small_size}px;">图 {i+1} 加载中...</p>'
                     html += '</div>'
 
         html += '</div>'
@@ -2169,28 +2182,24 @@ class _KBSnippetViewer(QDialog):
         self._refresh_content()
 
     def _refresh_content(self):
-        """刷新内容（保持缩放级别）"""
+        """刷新内容（根据当前缩放级别重建HTML）"""
         self.browser.setHtml(self._build_content_html())
-        if self._zoom_level > 0:
-            self.browser.zoomIn(self._zoom_level)
-        elif self._zoom_level < 0:
-            self.browser.zoomOut(-self._zoom_level)
+        pct = int(100 * (1.0 + self._zoom_level * 0.15))
+        self._zoom_label.setText(f'缩放: {pct}%')
 
     def _zoom(self, delta):
-        """缩放内容（QTextBrowser.zoomIn/zoomOut 同时缩放文字和图片）"""
-        self._zoom_level += delta
-        if delta > 0:
-            self.browser.zoomIn(delta)
-        else:
-            self.browser.zoomOut(-delta)
+        """缩放内容：重建HTML，同时调整字号和图片尺寸"""
+        new_level = self._zoom_level + delta
+        # 限制范围 -5 ~ +10
+        if new_level < -5 or new_level > 10:
+            return
+        self._zoom_level = new_level
+        self._refresh_content()
 
     def _reset_zoom(self):
         """重置缩放"""
-        if self._zoom_level > 0:
-            self.browser.zoomOut(self._zoom_level)
-        elif self._zoom_level < 0:
-            self.browser.zoomIn(-self._zoom_level)
         self._zoom_level = 0
+        self._refresh_content()
 
     def closeEvent(self, event):
         """关闭时清理临时图片文件"""
